@@ -17,7 +17,7 @@ import { HlsSource } from './resolver/hls-source.js';
 export async function buildApp() {
   const config = loadConfig();
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL ?? 'info' },
+    logger: { level: process.env.LOG_LEVEL || 'info' },
   });
 
   // Custom error handler to prevent leaking sensitive stack traces in production

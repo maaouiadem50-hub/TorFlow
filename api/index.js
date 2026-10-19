@@ -1789,7 +1789,7 @@ function createPublicIndexer(timeoutMs = 3e3) {
 async function buildApp() {
   const config = loadConfig();
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL ?? "info" }
+    logger: { level: process.env.LOG_LEVEL || "info" }
   });
   app.setErrorHandler((error, request, reply) => {
     const isProd = config.nodeEnv === "production";
@@ -1863,15 +1863,8 @@ if (process.env.VERCEL !== "1" && import.meta.url === `file://${process.argv[1]}
 // api/index.ts
 var appPromise = buildApp();
 async function handler(req, res) {
-  try {
-    const app = await appPromise;
-    app.server.emit("request", req, res);
-  } catch (error) {
-    console.error("TorFlow initialization failed", error);
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ error: "initialization_failed", message: error instanceof Error ? error.message : String(error) }));
-  }
+  const app = await appPromise;
+  app.server.emit("request", req, res);
 }
 export {
   handler as default
