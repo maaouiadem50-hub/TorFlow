@@ -1870,7 +1870,7 @@ async function handler(req, res) {
     console.error("TorFlow initialization failed", error);
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ error: "initialization_failed", message: error instanceof Error ? error.message : String(error) }));
+    res.end(JSON.stringify({ error: "initialization_failed", message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : void 0 }));
   }
 }
 export {
