@@ -86,7 +86,7 @@ export async function gracefulShutdown(app: FastifyInstance): Promise<void> {
   await app.close();
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.env.VERCEL !== '1' && import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
   const app = await buildApp();
 

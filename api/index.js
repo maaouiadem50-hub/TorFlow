@@ -10,13 +10,13 @@ import path from "node:path";
 function loadConfig(env = process.env) {
   const origins = env.ALLOWED_ORIGINS ?? env.CORS_ORIGIN ?? "*";
   return {
-    host: env.HOST ?? "0.0.0.0",
-    port: Number(env.PORT ?? 8080),
-    nodeEnv: env.NODE_ENV ?? "development",
-    cacheDir: path.resolve(env.CACHE_DIR ?? ".cache"),
-    cacheMaxBytes: Number(env.CACHE_MAX_BYTES ?? 2147483648),
-    cacheTtlSeconds: Number(env.CACHE_TTL_SECONDS ?? 3600),
-    maxConcurrentTorrents: Number(env.MAX_CONCURRENT_TORRENTS ?? 4),
+    host: env.HOST || "0.0.0.0",
+    port: Number(env.PORT || 8080),
+    nodeEnv: env.NODE_ENV || "development",
+    cacheDir: path.resolve(env.CACHE_DIR || (env.VERCEL ? "/tmp/torflow-cache" : ".cache")),
+    cacheMaxBytes: Number(env.CACHE_MAX_BYTES || 2147483648),
+    cacheTtlSeconds: Number(env.CACHE_TTL_SECONDS || 3600),
+    maxConcurrentTorrents: Number(env.MAX_CONCURRENT_TORRENTS || 4),
     allowedOrigins: origins.split(",").map((origin) => origin.trim()).filter(Boolean),
     indexerUrl: env.INDEXER_URL,
     indexerApiKey: env.INDEXER_API_KEY,
@@ -1831,7 +1831,7 @@ async function gracefulShutdown(app) {
   }
   await app.close();
 }
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.env.VERCEL !== "1" && import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
   const app = await buildApp();
   const shutdown = async (signal) => {
