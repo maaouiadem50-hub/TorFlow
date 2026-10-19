@@ -1863,8 +1863,15 @@ if (process.env.VERCEL !== "1" && import.meta.url === `file://${process.argv[1]}
 // api/index.ts
 var appPromise = buildApp();
 async function handler(req, res) {
-  const app = await appPromise;
-  app.server.emit("request", req, res);
+  try {
+    const app = await appPromise;
+    app.server.emit("request", req, res);
+  } catch (error) {
+    console.error("TorFlow initialization failed", error);
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ error: "initialization_failed", message: error instanceof Error ? error.message : String(error) }));
+  }
 }
 export {
   handler as default
