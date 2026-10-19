@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
-import WebTorrent from 'webtorrent';
 import { FileManifest, Source, StreamHandle, StreamStatus, TorrentManifest } from '../types.js';
 import { mimeType, randomId } from '../utils.js';
 import { prioritizePieces } from './piece-prioritizer.js';
@@ -47,7 +46,8 @@ export class TorrentEngine extends EventEmitter {
   private manifests = new Map<string, TorrentManifest>();
   private streams = new Map<string, StreamStatus>();
   private torrents = new Map<string, WebTorrentTorrent>();
-  private client: WebTorrentClient;
+  private client?: WebTorrentClient;
+  private clientPromise?: Promise<WebTorrentClient>;
 
   // Resource lifecycle tracking
   private torrentStreams = new Map<string, Set<string>>(); // infoHash -> Set<streamId>
@@ -61,9 +61,18 @@ export class TorrentEngine extends EventEmitter {
 
   constructor(client?: WebTorrentClient, options: TorrentEngineOptions = {}) {
     super();
-    this.client = client ?? (new WebTorrent() as unknown as WebTorrentClient);
+    this.client = client;
     this.maxConcurrentTorrents = Math.max(1, options.maxConcurrentTorrents ?? 4);
     this.idleTorrentGracePeriodMs = options.idleTorrentGracePeriodMs ?? 30_000;
+  }
+
+  private async getClient(): Promise<WebTorrentClient> {
+    if (this.client) return this.client;
+    this.clientPromise ??= import('webtorrent').then(({ default: WebTorrent }) => {
+      this.client = new WebTorrent() as unknown as WebTorrentClient;
+      return this.client;
+    });
+    return this.clientPromise;
   }
 
   async inspect(source: Source): Promise<TorrentManifest> {
@@ -74,6 +83,8 @@ export class TorrentEngine extends EventEmitter {
     if (this.isDestroyed) {
       throw new Error('TorrentEngine has been destroyed');
     }
+
+    const client = await this.getClient();
 
     const torrentSource = 'torrentBuffer' in source ? source.torrentBuffer : source.magnet;
     let expectedHash: string | undefined;
@@ -108,7 +119,7 @@ export class TorrentEngine extends EventEmitter {
       const finish = (error?: Error, torrent?: WebTorrentTorrent) => {
         if (settled) return;
         clearTimeout(timer);
-        this.client.off?.('error', clientError);
+        client.off?.('error', clientError);
 
         if (error || !torrent) {
           settled = true;
@@ -147,8 +158,8 @@ export class TorrentEngine extends EventEmitter {
       };
 
       try {
-        this.client.on?.('error', clientError);
-        activeTorrent = this.client.add(torrentSource, (ready) => finish(undefined, ready));
+        client.on?.('error', clientError);
+        activeTorrent = client.add(torrentSource, (ready) => finish(undefined, ready));
         activeTorrent?.on?.('error', (error) => finish(error));
         if (activeTorrent?.files?.length) {
           finish(undefined, activeTorrent);
@@ -543,6 +554,8 @@ export class TorrentEngine extends EventEmitter {
     this.manifests.clear();
     this.torrents.clear();
     this.removeAllListeners();
-    await new Promise<void>((resolve) => this.client.destroy(() => resolve()));
+    if (this.client) {
+      await new Promise<void>((resolve) => this.client!.destroy(() => resolve()));
+    }
   }
 }
