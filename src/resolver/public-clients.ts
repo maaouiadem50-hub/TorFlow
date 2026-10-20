@@ -95,13 +95,14 @@ function parseHtmlResults(html: string, source: string, fallback: string): Torre
     if (results.length >= 500) break;
   }
 
-  // 2) Info-hashes in common patterns (href, data-hash, btih=)
-  if (results.length < 20) {
+  // 2) Info-hashes in common patterns (href, data-hash, btih=, itorrents, .torrent links)
+  if (results.length < 30) {
     const hashPatterns = [
-      /btih[:/=]([a-f0-9]{40})/gi,
-      /data-(?:hash|infohash)=["']([a-f0-9]{40})["']/gi,
-      /\/torrent\/([a-f0-9]{40})/gi,
-      /info_hash=([a-f0-9]{40})/gi
+      /btih[:/=]([a-fA-F0-9]{40})/g,
+      /data-(?:hash|infohash)=["']([a-fA-F0-9]{40})["']/gi,
+      /\/torrent\/([a-fA-F0-9]{40})/gi,
+      /info_hash=([a-fA-F0-9]{40})/gi,
+      /([a-fA-F0-9]{40})\.torrent/g
     ];
     for (const pattern of hashPatterns) {
       for (const m of html.matchAll(pattern)) {
