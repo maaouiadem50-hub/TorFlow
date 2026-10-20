@@ -1878,6 +1878,96 @@ var TorrentGalaxyClient = class extends HtmlTorrentClient {
     super((_q, text) => `https://torrentgalaxy.to/torrents.php?search=${encodeURIComponent(text)}`, "torrentgalaxy", timeoutMs);
   }
 };
+var NyaaClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(text)}`, "nyaa", timeoutMs);
+  }
+};
+var LimeTorrentsClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(text)}/`, "limetorrents", timeoutMs);
+  }
+};
+var TorlockClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://www.torlock.com/all/torrents/${encodeURIComponent(text)}.html`, "torlock", timeoutMs);
+  }
+};
+var Torrentz2Client = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://torrentz2.nz/search?f=${encodeURIComponent(text)}`, "torrentz2", timeoutMs);
+  }
+};
+var RuTrackerClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 4e3) {
+    super((_q, text) => `https://rutracker.org/forum/tracker.php?nm=${encodeURIComponent(text)}`, "rutracker", timeoutMs);
+  }
+};
+var YggTorrentClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 4e3) {
+    super((_q, text) => `https://www.yggtorrent.top/engine/search?name=${encodeURIComponent(text)}&do=search`, "yggtorrent", timeoutMs);
+  }
+};
+var InternetArchiveClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 4e3) {
+    super((_q, text) => `https://archive.org/search?query=${encodeURIComponent(text)}&and[]=format%3A%22Torrent%22`, "internet-archive", timeoutMs);
+  }
+};
+var TorrentDownloadsClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://www.torrentdownloads.pro/search/?search=${encodeURIComponent(text)}`, "torrentdownloads", timeoutMs);
+  }
+};
+var PsAripsClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://psarips.top/?s=${encodeURIComponent(text)}`, "psarips", timeoutMs);
+  }
+};
+var ExtToClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://ext.to/search/?q=${encodeURIComponent(text)}`, "ext.to", timeoutMs);
+  }
+};
+var RarbgMirrorClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://rarbg.to/torrents.php?search=${encodeURIComponent(text)}`, "rarbg-mirror", timeoutMs);
+  }
+};
+var KickassMirrorClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://kickasstorrents.to/usearch/${encodeURIComponent(text)}/`, "kickass-mirror", timeoutMs);
+  }
+};
+var FitGirlClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 3e3) {
+    super((_q, text) => `https://fitgirl-repacks.site/?s=${encodeURIComponent(text)}`, "fitgirl", timeoutMs);
+  }
+};
+var AcademicTorrentsClient = class extends HtmlTorrentClient {
+  constructor(timeoutMs = 4e3) {
+    super((_q, text) => `https://academictorrents.com/browse.php?search=${encodeURIComponent(text)}`, "academic-torrents", timeoutMs);
+  }
+};
+var LinuxDistroClient = class {
+  constructor(timeoutMs = 4e3) {
+    this.timeoutMs = timeoutMs;
+  }
+  timeoutMs;
+  keywords = ["ubuntu", "debian", "fedora", "arch linux", "archlinux", "linux mint", "linuxmint", "rocky linux", "rockylinux", "almalinux", "opensuse", "open suse"];
+  async search(query, signal) {
+    const text = (query.title ?? query.query ?? "").toLowerCase();
+    const isDistro = this.keywords.some((k) => text.includes(k)) || /\b(iso|linux)\b/i.test(text);
+    if (!isDistro) return [];
+    const searchText = `${queryText(query)} iso`;
+    const clients = [
+      new HtmlTorrentClient((_q, t) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(t)}/`, "linux-limetorrents", this.timeoutMs),
+      new HtmlTorrentClient((_q, t) => `https://1337x.to/search/${encodeURIComponent(t)}/1/`, "linux-1337x", this.timeoutMs),
+      new HtmlTorrentClient((_q, t) => `https://archive.org/search?query=${encodeURIComponent(t)}+format%3ATorrent`, "linux-archive", this.timeoutMs)
+    ];
+    const settled = await Promise.allSettled(clients.map((c) => c.search({ ...query, query: searchText, title: searchText }, signal)));
+    return settled.flatMap((r) => r.status === "fulfilled" ? r.value : []);
+  }
+};
 var ApibayVideoClient = class {
   constructor(baseUrl = "https://apibay.org", timeoutMs = 3e3) {
     this.baseUrl = baseUrl;
@@ -1969,7 +2059,31 @@ var MultiIndexerClient = class {
   }
 };
 function createPublicIndexer(timeoutMs = 3e3) {
-  return new MultiIndexerClient([new YtsClient(void 0, timeoutMs), new TorrentioClient(void 0, timeoutMs), new ApibayVideoClient(void 0, timeoutMs), new X1337Client(timeoutMs), new EztvClient(timeoutMs), new TorrentGalaxyClient(timeoutMs), new AudioPublicClient(void 0, timeoutMs)]);
+  return new MultiIndexerClient([
+    new YtsClient(void 0, timeoutMs),
+    new TorrentioClient(void 0, timeoutMs),
+    new ApibayVideoClient(void 0, timeoutMs),
+    new X1337Client(timeoutMs),
+    new EztvClient(timeoutMs),
+    new TorrentGalaxyClient(timeoutMs),
+    new AudioPublicClient(void 0, timeoutMs),
+    // المصادر الجديدة
+    new NyaaClient(timeoutMs),
+    new LimeTorrentsClient(timeoutMs),
+    new TorlockClient(timeoutMs),
+    new Torrentz2Client(timeoutMs),
+    new RuTrackerClient(timeoutMs),
+    new YggTorrentClient(timeoutMs),
+    new InternetArchiveClient(timeoutMs),
+    new TorrentDownloadsClient(timeoutMs),
+    new PsAripsClient(timeoutMs),
+    new ExtToClient(timeoutMs),
+    new RarbgMirrorClient(timeoutMs),
+    new KickassMirrorClient(timeoutMs),
+    new FitGirlClient(timeoutMs),
+    new AcademicTorrentsClient(timeoutMs),
+    new LinuxDistroClient(timeoutMs)
+  ]);
 }
 
 // src/server.ts
