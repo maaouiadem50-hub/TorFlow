@@ -7,12 +7,13 @@ import { subtitleController } from '../controllers/subtitle-controller.js';
 import { TorrentEngine } from '../engine/torrent-engine.js';
 import { StreamResolver } from '../resolver/stream-resolver.js';
 import { adminDashboardHtml } from '../admin-dashboard.js';
+import { RequestTracker } from '../observability/request-tracker.js';
 
 type RuntimeMetrics = { startedAt: number; total: number; errors: number; byStatus: Record<string, number>; lastLatencyMs: number; countries: Map<string, number> };
-type RouteOptions = { apiKey?: string; adminKey?: string; metrics: RuntimeMetrics; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
+type RouteOptions = { apiKey?: string; adminKey?: string; metrics: RuntimeMetrics; requestTracker: RequestTracker; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
 
 export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver, options?: RouteOptions): Promise<void> {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: new Map<string, number>() }, config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: new Map<string, number>() }, requestTracker: new RequestTracker(), config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request: any, reply: any): Promise<boolean> => {
     if (!runtime.adminKey) { reply.code(503).send({ error: 'Admin authentication is not configured' }); return false; }
     if (request.headers['x-api-key'] !== runtime.adminKey) { reply.code(401).send({ error: 'Unauthorized' }); return false; }
@@ -50,6 +51,11 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
     const data = snapshot.streams.map((stream) => ({ ...stream, fileName: engine.getManifest(stream.infoHash)?.files[stream.fileIndex]?.name ?? `file-${stream.fileIndex}` }));
     return reply.header('Cache-Control', 'no-store').send({ data });
   });
+  app.get('/admin/api/requests', async (request, reply) => {
+    if (!await adminGuard(request, reply)) return;
+    const rawLimit = Number((request.query as { limit?: string }).limit ?? 100);
+    return reply.header('Cache-Control', 'no-store').send({ data: runtime.requestTracker.recent(Number.isFinite(rawLimit) ? rawLimit : 100) });
+  });
   app.post('/v1/metadata/inspect', { schema: { body: { type: 'object', required: ['magnet'], additionalProperties: false, properties: { magnet: { type: 'string', minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
   app.post('/v1/resolver/find-stream', {
     schema: {
@@ -80,7 +86,7 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
         }
       }
     }
-  }, resolverController(resolver));
+  }, resolverController(resolver, runtime.requestTracker));
 
   const torrentParams = { type: 'object', required: ['infoHash'], additionalProperties: false, properties: { infoHash: { type: 'string', pattern: '^(?:[a-fA-F0-9]{40}|[A-Z2-7a-z2-7]{32})$' } } } as const;
   const streamParams = { type: 'object', required: ['infoHash', 'fileIndex'], additionalProperties: false, properties: { ...torrentParams.properties, fileIndex: { type: 'string', pattern: '^(?:0|[1-9][0-9]{0,5})$' } } } as const;

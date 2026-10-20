@@ -6,6 +6,7 @@ import { loadConfig } from './config.js';
 import { CacheManager } from './engine/cache-manager.js';
 import { TorrentEngine } from './engine/torrent-engine.js';
 import { registerRoutes } from './routes/index.js';
+import { RequestTracker } from './observability/request-tracker.js';
 import { StreamResolver } from './resolver/stream-resolver.js';
 import { TorznabClient } from './resolver/torznab-client.js';
 import { MultiIndexerClient, createPublicIndexer } from './resolver/public-clients.js';
@@ -22,6 +23,7 @@ export async function buildApp() {
   });
 
   const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {} as Record<string, number>, lastLatencyMs: 0, countries: new Map<string, number>() };
+  const requestTracker = new RequestTracker();
   const requestStartedAt = new WeakMap<object, number>();
   app.addHook('onRequest', async (request) => {
     requestStartedAt.set(request, Date.now());
@@ -119,7 +121,7 @@ export async function buildApp() {
     new HlsSource()
   );
 
-  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, config });
+  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, requestTracker, config });
   app.decorate('streamix', { engine, cache, config });
 
   return app;

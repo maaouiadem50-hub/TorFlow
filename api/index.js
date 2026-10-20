@@ -651,18 +651,32 @@ function metadataController(engine) {
 }
 
 // src/controllers/resolver-controller.ts
-function resolverController(resolver) {
+import { randomUUID } from "node:crypto";
+function resolverController(resolver, tracker) {
   return async (request, reply) => {
     if (!resolver) return reply.code(503).send({ error: "Resolver is temporarily unavailable" });
     const query = request.body;
+    const requestId = randomUUID();
+    const trace = tracker?.start({ requestId, route: (request.url ?? "/").split("?")[0] ?? "/", method: request.method, requestType: query.type ?? "unknown" });
+    const receivedAt = trace?.receivedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    reply.header("x-request-id", requestId);
     try {
       const result = await resolver.findStream(query);
-      return reply.send({ data: result });
+      const subtitles = "subtitles" in result ? result.subtitles : [];
+      const quality = "quality" in result ? result.quality : void 0;
+      const diagnostics = { requestId, receivedAt, completedAt: (/* @__PURE__ */ new Date()).toISOString(), durationMs: Date.now() - Date.parse(receivedAt), status: "completed", phase: "completed", attempted: "attempted" in result ? result.attempted : void 0, source: "candidate" in result ? result.candidate.source : "hls", cacheHit: "cacheHit" in result ? result.cacheHit : false, subtitleStatus: subtitles.length ? "found" : "not_found", subtitleLanguages: subtitles.map((item) => item.lang), qualityStatus: quality?.resolution && quality.resolution !== "unknown" ? "found" : "unknown", quality: quality?.resolution };
+      const { requestId: _completedRequestId, ...completedTrace } = diagnostics;
+      tracker?.finish(requestId, completedTrace);
+      return reply.send({ requestId, diagnostics, data: result });
     } catch (error) {
       const message = error.message;
       const status = /required|invalid query|malformed/i.test(message) ? 400 : /timeout|timed out|no active peers|swarm/i.test(message) ? 504 : 404;
       const code = status === 400 ? "INVALID_QUERY" : status === 504 ? "SWARM_TIMEOUT" : "NO_HEALTHY_TORRENT";
-      return reply.code(status).send({ error: message, code });
+      const state = status === 504 ? "timeout" : "failed";
+      const diagnostics = { requestId, receivedAt, completedAt: (/* @__PURE__ */ new Date()).toISOString(), durationMs: Date.now() - Date.parse(receivedAt), status: state, phase: state, httpStatus: status, errorCode: code, errorMessage: message };
+      const { requestId: _failedRequestId, ...failedTrace } = diagnostics;
+      tracker?.finish(requestId, failedTrace);
+      return reply.code(status).send({ requestId, diagnostics, error: message, code });
     }
   };
 }
@@ -795,6 +809,7 @@ function adminDashboardHtml(nonce) {
 <section class="section"><h2>Active streams</h2><div class="table-wrap"><table><thead><tr><th>Stream ID</th><th>Info hash</th><th>File</th><th>Phase</th><th>Peers</th><th>Progress</th><th>Updated</th></tr></thead><tbody id="streams"><tr><td colspan="7" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><div class="section-head"><h2>Countries \u2014 observed requests</h2><span class="muted" id="countryScope">No data</span></div><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Country code</th><th>Requests</th><th>Share</th></tr></thead><tbody id="countries"><tr><td colspan="4" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><h2>Runtime requests</h2><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody id="runtime"><tr><td colspan="2" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
+<section class="section"><h2>Recent resolver requests</h2><div class="table-wrap"><table><thead><tr><th>Request ID</th><th>Type</th><th>Status</th><th>Duration</th><th>Source</th><th>Subtitles</th><th>Quality</th><th>Received</th></tr></thead><tbody id="requests"><tr><td colspan="8" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <div class="footer">Data refreshes every 5 seconds. Secrets are never rendered by the dashboard.</div>
 </main><script nonce="${nonce}">
 const keyInput=document.getElementById('key'); const statusEl=document.getElementById('status'); let key=sessionStorage.getItem('torflow_admin_key')||''; keyInput.value=key;
@@ -804,14 +819,41 @@ const fmtUptime=s=>{s=Number(s||0);return Math.floor(s/86400)+'d '+Math.floor(s%
 async function api(path){const r=await fetch(path,{headers:{'x-api-key':key}});if(r.status===401)throw Error('Unauthorized API key');if(!r.ok)throw Error('Request failed: '+r.status);return r.json()}
 function connect(){key=keyInput.value.trim();if(!key){statusEl.textContent='API key is required.';return}sessionStorage.setItem('torflow_admin_key',key);loadAll()}
 function renderCards(o){const vals=[o.service?.status||'online',fmtUptime(o.runtime?.uptimeSeconds),o.engine?.activeTorrents??0,o.engine?.activeStreams??0,fmtBytes(o.runtime?.memory?.rss),o.requests?.total??0,((o.requests?.errorRate||0)*100).toFixed(2)+'%',o.runtime?.version||'unknown'];document.querySelectorAll('#cards .value').forEach((e,i)=>e.textContent=vals[i])}
-async function loadAll(){if(!key){return}try{const [o,t,s]=await Promise.all([api('/admin/api/overview'),api('/admin/api/torrents'),api('/admin/api/streams')]);renderCards(o);document.getElementById('torrents').innerHTML=t.data.length?t.data.map(x=>\`<tr><td>\${esc(x.name)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${x.activeStreams}</td><td>\${fmtBytes(x.totalSize)}</td></tr>\`).join(''):'<tr><td colspan="6" class="empty">No active torrents.</td></tr>';document.getElementById('streams').innerHTML=s.data.length?s.data.map(x=>\`<tr><td class="mono">\${esc(x.streamId)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${esc(x.fileName)}</td><td><span class="pill">\${esc(x.phase)}</span></td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${esc(x.updatedAt)}</td></tr>\`).join(''):'<tr><td colspan="7" class="empty">No active streams.</td></tr>';document.getElementById('runtime').innerHTML=Object.entries(o.requests||{}).map(([k,v])=>\`<tr><td>\${esc(k)}</td><td>\${esc(v)}</td></tr>\`).join('');document.getElementById('countryScope').textContent=o.countries?.scope||'Observed requests';document.getElementById('countries').innerHTML=o.countries?.data?.length?o.countries.data.map((x,i)=>\`<tr><td>\${i+1}</td><td class="mono">\${esc(x.country)}</td><td>\${x.requests}</td><td>\${x.percentage.toFixed(2)}%</td></tr>\`).join(''):'<tr><td colspan="4" class="empty">No country observations yet.</td></tr>';statusEl.textContent='Connected \xB7 last update '+new Date().toLocaleTimeString();statusEl.style.color='var(--green)'}catch(e){statusEl.textContent=e.message;statusEl.style.color='var(--red)'}}
+async function loadAll(){if(!key){return}try{const [o,t,s]=await Promise.all([api('/admin/api/overview'),api('/admin/api/torrents'),api('/admin/api/streams'),api('/admin/api/requests?limit=50')]);renderCards(o);document.getElementById('torrents').innerHTML=t.data.length?t.data.map(x=>\`<tr><td>\${esc(x.name)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${x.activeStreams}</td><td>\${fmtBytes(x.totalSize)}</td></tr>\`).join(''):'<tr><td colspan="6" class="empty">No active torrents.</td></tr>';document.getElementById('streams').innerHTML=s.data.length?s.data.map(x=>\`<tr><td class="mono">\${esc(x.streamId)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${esc(x.fileName)}</td><td><span class="pill">\${esc(x.phase)}</span></td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${esc(x.updatedAt)}</td></tr>\`).join(''):'<tr><td colspan="7" class="empty">No active streams.</td></tr>';document.getElementById('runtime').innerHTML=Object.entries(o.requests||{}).map(([k,v])=>\`<tr><td>\${esc(k)}</td><td>\${esc(v)}</td></tr>\`).join('');document.getElementById('requests').innerHTML=r.data.length?r.data.map(x=>\`<tr><td class="mono">\${esc(x.requestId.slice(0,12))}\u2026</td><td>\${esc(x.requestType||'unknown')}</td><td><span class="pill">\${esc(x.status)}</span></td><td>\${x.durationMs??'\u2014'} ms</td><td>\${esc(x.source||'\u2014')}</td><td>\${esc(x.subtitleStatus||'\u2014')}</td><td>\${esc(x.quality||'\u2014')}</td><td>\${esc(x.receivedAt)}</td></tr>\`).join(''):'<tr><td colspan="8" class="empty">No resolver requests yet.</td></tr>';document.getElementById('countryScope').textContent=o.countries?.scope||'Observed requests';document.getElementById('countries').innerHTML=o.countries?.data?.length?o.countries.data.map((x,i)=>\`<tr><td>\${i+1}</td><td class="mono">\${esc(x.country)}</td><td>\${x.requests}</td><td>\${x.percentage.toFixed(2)}%</td></tr>\`).join(''):'<tr><td colspan="4" class="empty">No country observations yet.</td></tr>';statusEl.textContent='Connected \xB7 last update '+new Date().toLocaleTimeString();statusEl.style.color='var(--green)'}catch(e){statusEl.textContent=e.message;statusEl.style.color='var(--red)'}}
 loadAll();setInterval(loadAll,5000);
 </script></body></html>`;
 }
 
+// src/observability/request-tracker.ts
+var RequestTracker = class {
+  constructor(maxRecords = 500) {
+    this.maxRecords = maxRecords;
+  }
+  maxRecords;
+  records = [];
+  start(input) {
+    const record = { ...input, receivedAt: (/* @__PURE__ */ new Date()).toISOString(), status: "received", phase: "received" };
+    this.records.unshift(record);
+    this.trim();
+    return record;
+  }
+  finish(requestId, patch) {
+    const record = this.records.find((item) => item.requestId === requestId);
+    if (!record) return void 0;
+    Object.assign(record, patch, { requestId, completedAt: (/* @__PURE__ */ new Date()).toISOString(), durationMs: Date.now() - Date.parse(record.receivedAt) });
+    return record;
+  }
+  recent(limit = 100) {
+    return this.records.slice(0, Math.min(Math.max(limit, 1), 500)).map((record) => ({ ...record, subtitleLanguages: record.subtitleLanguages ? [...record.subtitleLanguages] : void 0 }));
+  }
+  trim() {
+    if (this.records.length > this.maxRecords) this.records.length = this.maxRecords;
+  }
+};
+
 // src/routes/index.ts
 async function registerRoutes(app, engine, resolver, options) {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() }, config: { nodeEnv: "development", maxConcurrentTorrents: 4, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() }, requestTracker: new RequestTracker(), config: { nodeEnv: "development", maxConcurrentTorrents: 4, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request, reply) => {
     if (!runtime.adminKey) {
       reply.code(503).send({ error: "Admin authentication is not configured" });
@@ -855,6 +897,11 @@ async function registerRoutes(app, engine, resolver, options) {
     const data = snapshot.streams.map((stream) => ({ ...stream, fileName: engine.getManifest(stream.infoHash)?.files[stream.fileIndex]?.name ?? `file-${stream.fileIndex}` }));
     return reply.header("Cache-Control", "no-store").send({ data });
   });
+  app.get("/admin/api/requests", async (request, reply) => {
+    if (!await adminGuard(request, reply)) return;
+    const rawLimit = Number(request.query.limit ?? 100);
+    return reply.header("Cache-Control", "no-store").send({ data: runtime.requestTracker.recent(Number.isFinite(rawLimit) ? rawLimit : 100) });
+  });
   app.post("/v1/metadata/inspect", { schema: { body: { type: "object", required: ["magnet"], additionalProperties: false, properties: { magnet: { type: "string", minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
   app.post("/v1/resolver/find-stream", {
     schema: {
@@ -885,7 +932,7 @@ async function registerRoutes(app, engine, resolver, options) {
         }
       }
     }
-  }, resolverController(resolver));
+  }, resolverController(resolver, runtime.requestTracker));
   const torrentParams = { type: "object", required: ["infoHash"], additionalProperties: false, properties: { infoHash: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[A-Z2-7a-z2-7]{32})$" } } };
   const streamParams = { type: "object", required: ["infoHash", "fileIndex"], additionalProperties: false, properties: { ...torrentParams.properties, fileIndex: { type: "string", pattern: "^(?:0|[1-9][0-9]{0,5})$" } } };
   const streamIdParams = { type: "object", required: ["streamId"], additionalProperties: false, properties: { streamId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" } } };
@@ -1933,6 +1980,7 @@ async function buildApp() {
     bodyLimit: 1048576
   });
   const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() };
+  const requestTracker = new RequestTracker();
   const requestStartedAt = /* @__PURE__ */ new WeakMap();
   app.addHook("onRequest", async (request) => {
     requestStartedAt.set(request, Date.now());
@@ -2014,7 +2062,7 @@ async function buildApp() {
     resolutionCache,
     new HlsSource()
   );
-  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, config });
+  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, requestTracker, config });
   app.decorate("streamix", { engine, cache, config });
   return app;
 }

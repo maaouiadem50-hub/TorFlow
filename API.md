@@ -50,6 +50,8 @@ For music, the built-in audio adapter searches public torrent JSON results, filt
 
 The service queries the built-in public adapters first, optionally queries Torznab, rejects candidates with fewer than 5 seeders, parses resolution/video/audio codec, and scores candidates using seed health plus player compatibility. It tries candidates in score order; if a public source times out or metadata/peers are unavailable, it falls back automatically.
 
+Each resolver response includes a unique `requestId` and `diagnostics` with received/completed timestamps, duration, status, phase, attempted candidate count, selected source, cache hit, subtitle status/languages, and quality status. Recent bounded in-memory diagnostics are available to the protected dashboard through `GET /admin/api/requests`; this is runtime telemetry, not a permanent audit database.
+
 Successful response:
 
 ```json
