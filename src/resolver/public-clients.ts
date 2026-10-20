@@ -25,7 +25,7 @@ function timeoutSignal(ms: number, signal?: AbortSignal): AbortSignal {
 
 function magnet(hash: string, name: string): string {
   if (!/^(?:[a-f0-9]{40}|[a-z2-7]{32})$/i.test(hash)) return '';
-  const params = [`xt=urn:btih:\( {hash}`, `dn= \){encodeURIComponent(name)}`];
+  const params = [`xt=urn:btih:${hash}`, `dn=${encodeURIComponent(name)}`];
   for (const tracker of TRACKERS) params.push(`tr=${encodeURIComponent(tracker)}`);
   return `magnet:?${params.join('&')}`;
 }
@@ -47,8 +47,8 @@ export function seriesQueryVariants(query: ResolverQuery): string[] {
   const e = query.episode;
   return [
     ...new Set([
-      `\( {base} S \){String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`,
-      `\( {base} S \){s} E${e}`,
+      `${base} S${String(s).padStart(2, '0')}E${String(e).padStart(2, '0')}`,
+      `${base} S${s} E${e}`,
       `${base} Season ${s} Episode ${e}`
     ])
   ];
@@ -132,18 +132,18 @@ export class TorrentioClient implements IndexerClient {
         ? 'series'
         : 'movie';
     const id = query.imdb_id ?? (query.tmdb_id ? `tmdb:${query.tmdb_id}` : encodeURIComponent(query.title ?? query.query ?? ''));
-    const suffix = kind === 'series' ? `:\( {query.season ?? 1}: \){query.episode ?? 1}` : '';
-    const url = `\( {this.baseUrl}/stream/ \){kind}/\( {id} \){suffix}.json`;
+    const suffix = kind === 'series' ? `:${query.season ?? 1}:${query.episode ?? 1}` : '';
+    const url = `${this.baseUrl}/stream/${kind}/${id}${suffix}.json`;
     let response: Response | undefined;
     let responseBody = '';
     let lastError: unknown;
     const urls = [url];
     if (kind === 'series' && query.season !== undefined && query.episode !== undefined) {
-      const padded = `\( {this.baseUrl}/stream/series/ \){id}:\( {String(query.season).padStart(2, '0')}: \){String(query.episode).padStart(2, '0')}.json`;
+      const padded = `${this.baseUrl}/stream/series/${id}:${String(query.season).padStart(2, '0')}:${String(query.episode).padStart(2, '0')}.json`;
       urls.push(padded);
       if (query.title || query.query) {
         const titleId = encodeURIComponent(query.title ?? query.query ?? '');
-        urls.push(`\( {this.baseUrl}/stream/series/ \){titleId}:\( {query.season}: \){query.episode}.json`);
+        urls.push(`${this.baseUrl}/stream/series/${titleId}:${query.season}:${query.episode}.json`);
       }
     }
     for (const requestUrl of urls) {
@@ -174,7 +174,7 @@ export class TorrentioClient implements IndexerClient {
               const parsed = JSON.parse(responseBody) as { streams?: unknown[] };
               if ((parsed.streams ?? []).length > 0) break;
             } catch {
-              /* continue */
+              /* continue to the next URL variant */
             }
             response = undefined;
             continue;
@@ -261,6 +261,8 @@ export class TorrentGalaxyClient extends HtmlTorrentClient {
     super((_q, text) => `https://torrentgalaxy.to/torrents.php?search=${encodeURIComponent(text)}`, 'torrentgalaxy', timeoutMs);
   }
 }
+
+// ========== المصادر الجديدة (Adapters صحيحة) ==========
 
 export class NyaaClient extends HtmlTorrentClient {
   constructor(timeoutMs = 3000) {
@@ -356,9 +358,18 @@ export class AcademicTorrentsClient extends HtmlTorrentClient {
 
 export class LinuxDistroClient implements IndexerClient {
   private readonly keywords = [
-    'ubuntu', 'debian', 'fedora', 'arch linux', 'archlinux',
-    'linux mint', 'linuxmint', 'rocky linux', 'rockylinux',
-    'almalinux', 'opensuse', 'open suse'
+    'ubuntu',
+    'debian',
+    'fedora',
+    'arch linux',
+    'archlinux',
+    'linux mint',
+    'linuxmint',
+    'rocky linux',
+    'rockylinux',
+    'almalinux',
+    'opensuse',
+    'open suse'
   ];
   constructor(private readonly timeoutMs = 4000) {}
   async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
@@ -386,6 +397,8 @@ export class LinuxDistroClient implements IndexerClient {
   }
 }
 
+// ========== نهاية المصادر الجديدة ==========
+
 export class ApibayVideoClient implements IndexerClient {
   constructor(private readonly baseUrl = 'https://apibay.org', private readonly timeoutMs = 3000) {}
   async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
@@ -396,7 +409,7 @@ export class ApibayVideoClient implements IndexerClient {
     const searchTerms = [...new Set([primary, ...textVariants])];
     const search = async (term: string): Promise<TorrentCandidate[]> => {
       try {
-        const response = await fetch(`\( {this.baseUrl}/q.php?q= \){encodeURIComponent(term)}&cat=200`, {
+        const response = await fetch(`${this.baseUrl}/q.php?q=${encodeURIComponent(term)}&cat=200`, {
           signal: timeoutSignal(this.timeoutMs, signal),
           headers: { accept: 'application/json' }
         });
@@ -451,7 +464,7 @@ export class AudioPublicClient implements IndexerClient {
       )
     ];
     const search = async (text: string): Promise<TorrentCandidate[]> => {
-      const response = await fetch(`\( {this.baseUrl}/q.php?q= \){encodeURIComponent(text)}`, {
+      const response = await fetch(`${this.baseUrl}/q.php?q=${encodeURIComponent(text)}`, {
         signal: timeoutSignal(this.timeoutMs, signal),
         headers: { accept: 'application/json' }
       });
@@ -517,6 +530,7 @@ export function createPublicIndexer(timeoutMs = 3000): IndexerClient {
     new EztvClient(timeoutMs),
     new TorrentGalaxyClient(timeoutMs),
     new AudioPublicClient(undefined, timeoutMs),
+    // المصادر الجديدة — Adapters كاملة
     new NyaaClient(timeoutMs),
     new LimeTorrentsClient(timeoutMs),
     new TorlockClient(timeoutMs),
