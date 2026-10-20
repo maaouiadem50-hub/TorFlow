@@ -1727,6 +1727,11 @@ var TRACKERS = [
   "udp://exodus.desync.com:6969/announce"
 ];
 var resolverDebug2 = process.env.RESOLVER_DEBUG === "true";
+var DEFAULT_HEADERS = {
+  "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "accept-language": "en-US,en;q=0.9"
+};
 function debug(event, data) {
   if (resolverDebug2) console.log(JSON.stringify({ scope: "resolver", event, ...data }));
 }
@@ -1769,20 +1774,52 @@ function parseTorrentioSeeders(name, title, description) {
 function parseHtmlResults(html, source, fallback) {
   const results = [];
   const seen = /* @__PURE__ */ new Set();
+  const push = (hash, title, seeders = 0) => {
+    const h = hash.toLowerCase();
+    if (seen.has(h)) return;
+    const m = magnet(hash, title || fallback);
+    if (!m) return;
+    seen.add(h);
+    results.push({ magnet: m, title: title || fallback, seeders, source });
+  };
   const magnetPattern = /magnet:\?[^"'<>\s]+/gi;
   for (const raw of html.match(magnetPattern) ?? []) {
     const match = raw.match(/xt=urn%3Abtih%3A([^&]+)|xt=urn:btih:([^&]+)/i);
     const hash = match?.[1] ?? match?.[2];
-    if (!hash || seen.has(hash.toLowerCase())) continue;
-    seen.add(hash.toLowerCase());
+    if (!hash) continue;
     const title = decodeURIComponent(raw.match(/[?&]dn=([^&]+)/i)?.[1] ?? fallback).replace(/[+]/g, " ");
-    const context = html.slice(Math.max(0, html.indexOf(raw) - 180), html.indexOf(raw) + raw.length + 180);
+    const context = html.slice(Math.max(0, html.indexOf(raw) - 200), html.indexOf(raw) + raw.length + 200);
     const seeders = Number(context.match(/(?:seed(?:s|ers)?|👤)[^0-9]{0,12}(\d+)/i)?.[1] ?? 0);
-    const normalized = normalizeMagnet(raw, title);
-    if (normalized) results.push({ magnet: normalized, title, seeders, source });
+    push(hash, title, seeders);
     if (results.length >= 500) break;
   }
+  if (results.length < 30) {
+    const hashPatterns = [
+      /btih[:/=]([a-fA-F0-9]{40})/g,
+      /data-(?:hash|infohash)=["']([a-fA-F0-9]{40})["']/gi,
+      /\/torrent\/([a-fA-F0-9]{40})/gi,
+      /info_hash=([a-fA-F0-9]{40})/gi,
+      /([a-fA-F0-9]{40})\.torrent/g
+    ];
+    for (const pattern of hashPatterns) {
+      for (const m of html.matchAll(pattern)) {
+        const hash = m[1];
+        if (!hash) continue;
+        const start = Math.max(0, (m.index ?? 0) - 120);
+        const context = html.slice(start, start + 300);
+        const titleMatch = context.match(/title=["']([^"']{5,120})["']/) ?? context.match(/>([^<]{8,100})</);
+        const title = (titleMatch?.[1] ?? fallback).replace(/\s+/g, " ").trim();
+        const seeders = Number(context.match(/(?:seed(?:s|ers)?)[^0-9]{0,12}(\d+)/i)?.[1] ?? 0);
+        push(hash, title, seeders);
+        if (results.length >= 100) break;
+      }
+    }
+  }
   return results;
+}
+function xmlTag(xml, name) {
+  const match = xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, "i"));
+  return match?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, "").trim();
 }
 var YtsClient = class {
   constructor(baseUrl = "https://movies-api.accel.li/api/v2", timeoutMs = 3e3) {
@@ -1920,7 +1957,7 @@ var HtmlTorrentClient = class {
       variants.map(async (text) => {
         const response = await fetch(this.url(query, text), {
           signal: timeoutSignal(this.timeoutMs, signal),
-          headers: { accept: "text/html,application/xhtml+xml" }
+          headers: { ...DEFAULT_HEADERS, accept: "text/html,application/xhtml+xml" }
         });
         if (!response.ok) throw new Error(`${this.source} HTTP ${response.status}`);
         return parseHtmlResults(await readTextLimited(response), this.source, text);
@@ -1931,22 +1968,101 @@ var HtmlTorrentClient = class {
 };
 var X1337Client = class extends HtmlTorrentClient {
   constructor(timeoutMs = 3e3) {
-    super((_q, text) => `https://1337x.to/search/${encodeURIComponent(text)}/1/`, "1337x", timeoutMs);
+    super((_q, text) => `https://www.1377x.to/search/${encodeURIComponent(text)}/1/`, "1337x", timeoutMs);
   }
 };
-var EztvClient = class extends HtmlTorrentClient {
-  constructor(timeoutMs = 3e3) {
-    super((_q, text) => `https://eztv.re/search/${encodeURIComponent(text)}`, "eztv", timeoutMs);
+var EztvClient = class {
+  constructor(timeoutMs = 4e3) {
+    this.timeoutMs = timeoutMs;
+  }
+  timeoutMs;
+  async search(query, signal) {
+    if (query.type === "music") return [];
+    if (query.imdb_id) {
+      const imdb = query.imdb_id.replace(/^tt/i, "");
+      try {
+        const url = `https://eztv.re/api/get-torrents?limit=50&imdb_id=${encodeURIComponent(imdb)}`;
+        const response2 = await fetch(url, {
+          signal: timeoutSignal(this.timeoutMs, signal),
+          headers: { accept: "application/json", ...DEFAULT_HEADERS }
+        });
+        if (response2.ok) {
+          const payload = JSON.parse(await readTextLimited(response2));
+          const fromApi = (payload.torrents ?? []).map((t) => {
+            const title = t.title ?? t.filename ?? queryText(query);
+            const m = t.magnet_url ? normalizeMagnet(t.magnet_url, title) : t.hash ? magnet(t.hash, title) : "";
+            return {
+              magnet: m,
+              title,
+              seeders: Number(t.seeds ?? 0),
+              leechers: Number(t.peers ?? 0),
+              size: Number(t.size_bytes ?? 0),
+              source: "eztv"
+            };
+          }).filter((c) => c.magnet);
+          if (fromApi.length) return fromApi;
+        }
+      } catch {
+      }
+    }
+    const text = queryText(query);
+    const response = await fetch(`https://eztv.re/search/${encodeURIComponent(text)}`, {
+      signal: timeoutSignal(this.timeoutMs, signal),
+      headers: { ...DEFAULT_HEADERS }
+    });
+    if (!response.ok) throw new Error(`eztv HTTP ${response.status}`);
+    return parseHtmlResults(await readTextLimited(response), "eztv", text);
   }
 };
 var TorrentGalaxyClient = class extends HtmlTorrentClient {
   constructor(timeoutMs = 3e3) {
-    super((_q, text) => `https://torrentgalaxy.to/torrents.php?search=${encodeURIComponent(text)}`, "torrentgalaxy", timeoutMs);
+    super((_q, text) => `https://torrentgalaxy.one/torrents.php?search=${encodeURIComponent(text)}`, "torrentgalaxy", timeoutMs);
   }
 };
-var NyaaClient = class extends HtmlTorrentClient {
-  constructor(timeoutMs = 3e3) {
-    super((_q, text) => `https://nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(text)}`, "nyaa", timeoutMs);
+var NyaaClient = class {
+  constructor(timeoutMs = 4e3) {
+    this.timeoutMs = timeoutMs;
+  }
+  timeoutMs;
+  async search(query, signal) {
+    if (query.type === "music") return [];
+    const variants = query.type === "tv_program" || isTvProgram(query) ? tvProgramQueryVariants(query) : seriesQueryVariants(query);
+    const all = [];
+    for (const text of variants) {
+      const url = `https://nyaa.si/?page=rss&q=${encodeURIComponent(text)}&c=0_0&f=0`;
+      try {
+        const response = await fetch(url, {
+          signal: timeoutSignal(this.timeoutMs, signal),
+          headers: { accept: "application/rss+xml,application/xml,text/xml", ...DEFAULT_HEADERS }
+        });
+        if (!response.ok) continue;
+        const xml = await readTextLimited(response);
+        for (const itemMatch of xml.matchAll(/<item[\s\S]*?<\/item>/gi)) {
+          const item = itemMatch[0];
+          const title = xmlTag(item, "title") ?? text;
+          const seeders = Number(xmlTag(item, "nyaa:seeders") ?? xmlTag(item, "seeders") ?? 0);
+          const size = Number(xmlTag(item, "nyaa:size") ?? 0);
+          let m = xmlTag(item, "nyaa:infoHash") ? magnet(xmlTag(item, "nyaa:infoHash"), title) : "";
+          if (!m) {
+            const link = xmlTag(item, "link") ?? "";
+            if (link.startsWith("magnet:?")) m = normalizeMagnet(link, title);
+            else {
+              const hashMatch = item.match(/btih:([a-f0-9]{40})/i) ?? item.match(/([a-f0-9]{40})/);
+              if (hashMatch?.[1] && hashMatch[1].length === 40) m = magnet(hashMatch[1], title);
+            }
+          }
+          if (!m) {
+            const desc = xmlTag(item, "description") ?? "";
+            const mm = desc.match(/magnet:\?[^"'<\s]+/i);
+            if (mm) m = normalizeMagnet(mm[0], title);
+          }
+          if (m) all.push({ magnet: m, title, seeders, size: Number.isFinite(size) ? size : 0, source: "nyaa" });
+        }
+        if (all.some((c) => c.seeders >= 3)) break;
+      } catch {
+      }
+    }
+    return all;
   }
 };
 var LimeTorrentsClient = class extends HtmlTorrentClient {
@@ -1978,13 +2094,56 @@ var YggTorrentClient = class extends HtmlTorrentClient {
     );
   }
 };
-var InternetArchiveClient = class extends HtmlTorrentClient {
-  constructor(timeoutMs = 4e3) {
-    super(
-      (_q, text) => `https://archive.org/search?query=${encodeURIComponent(text)}&and[]=format%3A%22Torrent%22`,
-      "internet-archive",
-      timeoutMs
-    );
+var InternetArchiveClient = class {
+  constructor(timeoutMs = 5e3) {
+    this.timeoutMs = timeoutMs;
+  }
+  timeoutMs;
+  async search(query, signal) {
+    if (query.type === "music") return [];
+    const text = queryText(query);
+    const q = `(${text}) AND format:("Torrent")`;
+    const url = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl[]=identifier&fl[]=title&fl[]=downloads&rows=15&page=1&output=json`;
+    try {
+      const response = await fetch(url, {
+        signal: timeoutSignal(this.timeoutMs, signal),
+        headers: { accept: "application/json", ...DEFAULT_HEADERS }
+      });
+      if (!response.ok) return [];
+      const payload = JSON.parse(await readTextLimited(response));
+      const docs = payload.response?.docs ?? [];
+      const results = [];
+      for (const doc of docs.slice(0, 10)) {
+        if (!doc.identifier) continue;
+        try {
+          const metaUrl = `https://archive.org/metadata/${encodeURIComponent(doc.identifier)}`;
+          const metaRes = await fetch(metaUrl, {
+            signal: timeoutSignal(this.timeoutMs, signal),
+            headers: { accept: "application/json", ...DEFAULT_HEADERS }
+          });
+          if (!metaRes.ok) continue;
+          const meta = JSON.parse(await readTextLimited(metaRes));
+          const title = doc.title ?? meta.metadata?.title ?? text;
+          for (const file of meta.files ?? []) {
+            if (file.btih) {
+              results.push({
+                magnet: magnet(file.btih, title),
+                title: `${title} (${file.name ?? "torrent"})`,
+                seeders: Math.min(50, Number(doc.downloads ?? 1) || 1),
+                size: Number(file.size ?? 0),
+                source: "internet-archive"
+              });
+            } else if (file.format?.toLowerCase().includes("torrent") || file.name?.endsWith(".torrent")) {
+            }
+          }
+        } catch {
+        }
+        if (results.length >= 20) break;
+      }
+      return results.filter((c) => c.magnet);
+    } catch {
+      return [];
+    }
   }
 };
 var TorrentDownloadsClient = class extends HtmlTorrentClient {
@@ -2023,7 +2182,7 @@ var AcademicTorrentsClient = class extends HtmlTorrentClient {
   }
 };
 var LinuxDistroClient = class {
-  constructor(timeoutMs = 4e3) {
+  constructor(timeoutMs = 5e3) {
     this.timeoutMs = timeoutMs;
   }
   timeoutMs;
@@ -2047,17 +2206,13 @@ var LinuxDistroClient = class {
     if (!isDistro) return [];
     const searchText = `${queryText(query)} iso`;
     const clients = [
+      new InternetArchiveClient(this.timeoutMs),
       new HtmlTorrentClient(
         (_q, t) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(t)}/`,
         "linux-limetorrents",
         this.timeoutMs
       ),
-      new HtmlTorrentClient((_q, t) => `https://1337x.to/search/${encodeURIComponent(t)}/1/`, "linux-1337x", this.timeoutMs),
-      new HtmlTorrentClient(
-        (_q, t) => `https://archive.org/search?query=${encodeURIComponent(t)}+format%3ATorrent`,
-        "linux-archive",
-        this.timeoutMs
-      )
+      new NyaaClient(this.timeoutMs)
     ];
     const settled = await Promise.allSettled(
       clients.map((c) => c.search({ ...query, query: searchText, title: searchText }, signal))
@@ -2196,7 +2351,6 @@ function createPublicIndexer(timeoutMs = 3e3) {
     new EztvClient(timeoutMs),
     new TorrentGalaxyClient(timeoutMs),
     new AudioPublicClient(void 0, timeoutMs),
-    // المصادر الجديدة — Adapters كاملة
     new NyaaClient(timeoutMs),
     new LimeTorrentsClient(timeoutMs),
     new TorlockClient(timeoutMs),
