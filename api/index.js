@@ -1697,7 +1697,14 @@ var TorznabClient = class {
 };
 
 // src/resolver/public-clients.ts
-var TRACKERS = ["udp://open.stealth.si:80/announce", "udp://tracker.opentrackr.org:1337/announce", "udp://tracker.openbittorrent.com:6969/announce", "udp://tracker.torrent.eu.org:451/announce", "udp://tracker.dler.org:6969/announce", "udp://exodus.desync.com:6969/announce"];
+var TRACKERS = [
+  "udp://open.stealth.si:80/announce",
+  "udp://tracker.opentrackr.org:1337/announce",
+  "udp://tracker.openbittorrent.com:6969/announce",
+  "udp://tracker.torrent.eu.org:451/announce",
+  "udp://tracker.dler.org:6969/announce",
+  "udp://exodus.desync.com:6969/announce"
+];
 var resolverDebug2 = process.env.RESOLVER_DEBUG === "true";
 function debug(event, data) {
   if (resolverDebug2) console.log(JSON.stringify({ scope: "resolver", event, ...data }));
@@ -1772,10 +1779,19 @@ var YtsClient = class {
     const response = await fetch(url, { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "application/json" } });
     if (!response.ok) throw new Error(`YTS HTTP ${response.status}`);
     const payload = JSON.parse(await readTextLimited(response));
-    return (payload.data?.movies ?? []).flatMap((movie) => (movie.torrents ?? []).map((torrent) => {
-      const title = `${movie.title ?? query.title ?? query.query ?? ""} ${movie.year ?? query.year ?? ""} ${torrent.quality ?? ""} ${torrent.type ?? ""} x264`;
-      return { magnet: torrent.hash ? magnet(torrent.hash, title) : "", title, seeders: Number(torrent.seeds ?? torrent.peers ?? 0), leechers: Number(torrent.peers ?? 0), size: Number(torrent.size_bytes ?? 0), source: "yts" };
-    })).filter((candidate) => candidate.magnet);
+    return (payload.data?.movies ?? []).flatMap(
+      (movie) => (movie.torrents ?? []).map((torrent) => {
+        const title = `${movie.title ?? query.title ?? query.query ?? ""} ${movie.year ?? query.year ?? ""} ${torrent.quality ?? ""} ${torrent.type ?? ""} x264`;
+        return {
+          magnet: torrent.hash ? magnet(torrent.hash, title) : "",
+          title,
+          seeders: Number(torrent.seeds ?? torrent.peers ?? 0),
+          leechers: Number(torrent.peers ?? 0),
+          size: Number(torrent.size_bytes ?? 0),
+          source: "yts"
+        };
+      })
+    ).filter((candidate) => candidate.magnet);
   }
 };
 var TorrentioClient = class {
@@ -1805,11 +1821,27 @@ var TorrentioClient = class {
     }
     for (const requestUrl of urls) {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        debug("torrentio_request_start", { url: requestUrl, attempt: attempt + 1, type: query.type ?? "movie", imdbId: query.imdb_id, season: query.season, episode: query.episode });
+        debug("torrentio_request_start", {
+          url: requestUrl,
+          attempt: attempt + 1,
+          type: query.type ?? "movie",
+          imdbId: query.imdb_id,
+          season: query.season,
+          episode: query.episode
+        });
         try {
-          response = await fetch(requestUrl, { signal: timeoutSignal(Math.max(this.timeoutMs, 8e3), signal), headers: { accept: "application/json" } });
+          response = await fetch(requestUrl, {
+            signal: timeoutSignal(Math.max(this.timeoutMs, 8e3), signal),
+            headers: { accept: "application/json" }
+          });
           responseBody = await readTextLimited(response);
-          debug("torrentio_response", { url: requestUrl, attempt: attempt + 1, status: response.status, bytes: responseBody.length, preview: responseBody.slice(0, 180) });
+          debug("torrentio_response", {
+            url: requestUrl,
+            attempt: attempt + 1,
+            status: response.status,
+            bytes: responseBody.length,
+            preview: responseBody.slice(0, 180)
+          });
           if (response.ok) {
             try {
               const parsed = JSON.parse(responseBody);
@@ -1837,9 +1869,17 @@ var TorrentioClient = class {
       const hash = stream.infoHash ?? stream.url?.match(/urn:btih:([^&/]+)/i)?.[1];
       const candidateMagnet = hash ? magnet(hash, title) : stream.url?.startsWith("magnet:?") ? normalizeMagnet(stream.url, title) : "";
       const parsedSeeders = parseTorrentioSeeders(stream.name, stream.title, stream.description);
-      return { magnet: candidateMagnet, title, seeders: parsedSeeders > 0 ? parsedSeeders : 1, source: "torrentio" };
+      return {
+        magnet: candidateMagnet,
+        title,
+        seeders: parsedSeeders > 0 ? parsedSeeders : 1,
+        source: "torrentio"
+      };
     }).filter((candidate) => candidate.magnet);
-    debug("torrentio_candidates", { count: candidates.length, seeders: candidates.slice(0, 10).map((candidate) => candidate.seeders) });
+    debug("torrentio_candidates", {
+      count: candidates.length,
+      seeders: candidates.slice(0, 10).map((candidate) => candidate.seeders)
+    });
     return candidates;
   }
 };
@@ -1855,11 +1895,16 @@ var HtmlTorrentClient = class {
   async search(query, signal) {
     if (!isVideo(query)) return [];
     const variants = query.type === "tv_program" || isTvProgram(query) ? tvProgramQueryVariants(query) : seriesQueryVariants(query);
-    const settled = await Promise.allSettled(variants.map(async (text) => {
-      const response = await fetch(this.url(query, text), { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "text/html,application/xhtml+xml" } });
-      if (!response.ok) throw new Error(`${this.source} HTTP ${response.status}`);
-      return parseHtmlResults(await readTextLimited(response), this.source, text);
-    }));
+    const settled = await Promise.allSettled(
+      variants.map(async (text) => {
+        const response = await fetch(this.url(query, text), {
+          signal: timeoutSignal(this.timeoutMs, signal),
+          headers: { accept: "text/html,application/xhtml+xml" }
+        });
+        if (!response.ok) throw new Error(`${this.source} HTTP ${response.status}`);
+        return parseHtmlResults(await readTextLimited(response), this.source, text);
+      })
+    );
     return settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
   }
 };
@@ -1905,12 +1950,20 @@ var RuTrackerClient = class extends HtmlTorrentClient {
 };
 var YggTorrentClient = class extends HtmlTorrentClient {
   constructor(timeoutMs = 4e3) {
-    super((_q, text) => `https://www.yggtorrent.top/engine/search?name=${encodeURIComponent(text)}&do=search`, "yggtorrent", timeoutMs);
+    super(
+      (_q, text) => `https://www.yggtorrent.top/engine/search?name=${encodeURIComponent(text)}&do=search`,
+      "yggtorrent",
+      timeoutMs
+    );
   }
 };
 var InternetArchiveClient = class extends HtmlTorrentClient {
   constructor(timeoutMs = 4e3) {
-    super((_q, text) => `https://archive.org/search?query=${encodeURIComponent(text)}&and[]=format%3A%22Torrent%22`, "internet-archive", timeoutMs);
+    super(
+      (_q, text) => `https://archive.org/search?query=${encodeURIComponent(text)}&and[]=format%3A%22Torrent%22`,
+      "internet-archive",
+      timeoutMs
+    );
   }
 };
 var TorrentDownloadsClient = class extends HtmlTorrentClient {
@@ -1953,18 +2006,41 @@ var LinuxDistroClient = class {
     this.timeoutMs = timeoutMs;
   }
   timeoutMs;
-  keywords = ["ubuntu", "debian", "fedora", "arch linux", "archlinux", "linux mint", "linuxmint", "rocky linux", "rockylinux", "almalinux", "opensuse", "open suse"];
+  keywords = [
+    "ubuntu",
+    "debian",
+    "fedora",
+    "arch linux",
+    "archlinux",
+    "linux mint",
+    "linuxmint",
+    "rocky linux",
+    "rockylinux",
+    "almalinux",
+    "opensuse",
+    "open suse"
+  ];
   async search(query, signal) {
     const text = (query.title ?? query.query ?? "").toLowerCase();
     const isDistro = this.keywords.some((k) => text.includes(k)) || /\b(iso|linux)\b/i.test(text);
     if (!isDistro) return [];
     const searchText = `${queryText(query)} iso`;
     const clients = [
-      new HtmlTorrentClient((_q, t) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(t)}/`, "linux-limetorrents", this.timeoutMs),
+      new HtmlTorrentClient(
+        (_q, t) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(t)}/`,
+        "linux-limetorrents",
+        this.timeoutMs
+      ),
       new HtmlTorrentClient((_q, t) => `https://1337x.to/search/${encodeURIComponent(t)}/1/`, "linux-1337x", this.timeoutMs),
-      new HtmlTorrentClient((_q, t) => `https://archive.org/search?query=${encodeURIComponent(t)}+format%3ATorrent`, "linux-archive", this.timeoutMs)
+      new HtmlTorrentClient(
+        (_q, t) => `https://archive.org/search?query=${encodeURIComponent(t)}+format%3ATorrent`,
+        "linux-archive",
+        this.timeoutMs
+      )
     ];
-    const settled = await Promise.allSettled(clients.map((c) => c.search({ ...query, query: searchText, title: searchText }, signal)));
+    const settled = await Promise.allSettled(
+      clients.map((c) => c.search({ ...query, query: searchText, title: searchText }, signal))
+    );
     return settled.flatMap((r) => r.status === "fulfilled" ? r.value : []);
   }
 };
@@ -2020,14 +2096,34 @@ var AudioPublicClient = class {
   async search(query, signal) {
     if (query.type !== "music") return [];
     const detailed = queryText(query);
-    const terms = [...new Set([detailed, [query.artist, query.album, query.track, query.query].filter(Boolean).join(" "), query.track, query.album, query.artist].filter((value) => Boolean(value)))];
+    const terms = [
+      ...new Set(
+        [
+          detailed,
+          [query.artist, query.album, query.track, query.query].filter(Boolean).join(" "),
+          query.track,
+          query.album,
+          query.artist
+        ].filter((value) => Boolean(value))
+      )
+    ];
     const search = async (text) => {
-      const response = await fetch(`${this.baseUrl}/q.php?q=${encodeURIComponent(text)}`, { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "application/json" } });
+      const response = await fetch(`${this.baseUrl}/q.php?q=${encodeURIComponent(text)}`, {
+        signal: timeoutSignal(this.timeoutMs, signal),
+        headers: { accept: "application/json" }
+      });
       if (!response.ok) throw new Error(`Audio indexer HTTP ${response.status}`);
       const payload = JSON.parse(await readTextLimited(response));
       return payload.map((item) => {
         const title = item.name ?? text;
-        return { magnet: item.info_hash ? magnet(item.info_hash, title) : "", title, seeders: Number(item.seeders ?? 0), leechers: Number(item.leechers ?? 0), size: Number(item.size ?? 0), source: "public-audio" };
+        return {
+          magnet: item.info_hash ? magnet(item.info_hash, title) : "",
+          title,
+          seeders: Number(item.seeders ?? 0),
+          leechers: Number(item.leechers ?? 0),
+          size: Number(item.size ?? 0),
+          source: "public-audio"
+        };
       }).filter((candidate) => candidate.magnet);
     };
     const all = [];
@@ -2048,7 +2144,11 @@ var MultiIndexerClient = class {
     const settled = await Promise.allSettled(this.clients.map((client) => client.search(query, signal)));
     const results = settled.flatMap((result, index) => {
       if (result.status === "fulfilled") {
-        debug("indexer_result", { index, count: result.value.length, seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders) });
+        debug("indexer_result", {
+          index,
+          count: result.value.length,
+          seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders)
+        });
         return result.value;
       }
       debug("indexer_error", { index, error: String(result.reason) });
@@ -2067,7 +2167,7 @@ function createPublicIndexer(timeoutMs = 3e3) {
     new EztvClient(timeoutMs),
     new TorrentGalaxyClient(timeoutMs),
     new AudioPublicClient(void 0, timeoutMs),
-    // المصادر الجديدة
+    // المصادر الجديدة — Adapters كاملة
     new NyaaClient(timeoutMs),
     new LimeTorrentsClient(timeoutMs),
     new TorlockClient(timeoutMs),
