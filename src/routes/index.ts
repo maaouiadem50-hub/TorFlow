@@ -7,7 +7,8 @@ import { TorrentEngine } from '../engine/torrent-engine.js';
 import { StreamResolver } from '../resolver/stream-resolver.js';
 
 export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver): Promise<void> {
-  app.get('/health', async () => ({ status: 'ok', service: 'torflow' }));
+  app.get('/health', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ok', service: 'torflow' }));
+  app.get('/ready', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ready', service: 'torflow' }));
   app.post('/v1/metadata/inspect', { schema: { body: { type: 'object', required: ['magnet'], additionalProperties: false, properties: { magnet: { type: 'string', minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
   app.post('/v1/resolver/find-stream', {
     schema: {

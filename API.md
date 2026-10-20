@@ -8,6 +8,8 @@ Copy `.env.example` to `.env`. Set `TORFLOW_API_KEY` for protected API access; c
 
 ## Automated resolver
 
+`GET /health` is a public liveness check. `GET /ready` is a public readiness check for load balancers; both return `Cache-Control: no-store`.
+
 `POST /v1/resolver/find-stream`
 
 ```json
