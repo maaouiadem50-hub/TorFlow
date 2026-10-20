@@ -8,11 +8,11 @@ import sensible from "@fastify/sensible";
 import "dotenv/config";
 import path from "node:path";
 function loadConfig(env = process.env) {
-  const origins = env.ALLOWED_ORIGINS ?? env.CORS_ORIGIN ?? "*";
+  const origins = env.ALLOWED_ORIGINS ?? env.CORS_ORIGIN ?? "";
   return {
     host: env.HOST || "0.0.0.0",
     port: Number(env.PORT || 8080),
-    nodeEnv: env.NODE_ENV || "development",
+    nodeEnv: env.NODE_ENV || (env.VERCEL ? "production" : "development"),
     cacheDir: path.resolve(env.CACHE_DIR || (env.VERCEL ? "/tmp/torflow-cache" : ".cache")),
     cacheMaxBytes: Number(env.CACHE_MAX_BYTES || 2147483648),
     cacheTtlSeconds: Number(env.CACHE_TTL_SECONDS || 3600),
@@ -25,7 +25,10 @@ function loadConfig(env = process.env) {
     resolutionCacheEnabled: env.RESOLUTION_CACHE_ENABLED !== "false",
     resolutionCacheTtlSeconds: Math.min(Math.max(Number(env.RESOLUTION_CACHE_TTL_SECONDS ?? 3600), 60), 7200),
     resolutionCacheMaxEntries: Math.max(Number(env.RESOLUTION_CACHE_MAX_ENTRIES ?? 500), 1),
-    resolverDebug: env.RESOLVER_DEBUG === "true"
+    resolverDebug: env.RESOLVER_DEBUG === "true",
+    apiKey: env.TORFLOW_API_KEY || void 0,
+    rateLimitWindowMs: Math.max(Number(env.RATE_LIMIT_WINDOW_MS || 6e4), 1e3),
+    rateLimitMax: Math.max(Number(env.RATE_LIMIT_MAX || 60), 1)
   };
 }
 
@@ -632,8 +635,9 @@ function resolverController(resolver) {
       return reply.send({ data: result });
     } catch (error) {
       const message = error.message;
-      const status = /timeout|timed out|no active peers|swarm/i.test(message) ? 504 : 404;
-      return reply.code(status).send({ error: message, code: status === 504 ? "SWARM_TIMEOUT" : "NO_HEALTHY_TORRENT" });
+      const status = /required|invalid|must be|malformed/i.test(message) ? 400 : /timeout|timed out|no active peers|swarm/i.test(message) ? 504 : 404;
+      const code = status === 400 ? "INVALID_QUERY" : status === 504 ? "SWARM_TIMEOUT" : "NO_HEALTHY_TORRENT";
+      return reply.code(status).send({ error: message, code });
     }
   };
 }
@@ -749,43 +753,48 @@ function subtitleController(engine) {
 // src/routes/index.ts
 async function registerRoutes(app, engine, resolver) {
   app.get("/health", async () => ({ status: "ok", service: "torflow" }));
-  app.post("/v1/metadata/inspect", { schema: { body: { type: "object", properties: { magnet: { type: "string" } } } } }, metadataController(engine));
+  app.post("/v1/metadata/inspect", { schema: { body: { type: "object", required: ["magnet"], additionalProperties: false, properties: { magnet: { type: "string", minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
   app.post("/v1/resolver/find-stream", {
     schema: {
       body: {
         type: "object",
+        additionalProperties: false,
+        anyOf: [{ required: ["title"] }, { required: ["query"] }, { required: ["artist"] }, { required: ["album"] }, { required: ["track"] }, { required: ["imdb_id"] }, { required: ["tmdb_id"] }],
         properties: {
           type: { type: "string", enum: ["movie", "series", "music", "tv_program"] },
-          title: { type: "string" },
-          query: { type: "string" },
-          artist: { type: "string" },
-          album: { type: "string" },
-          track: { type: "string" },
-          year: { type: "integer" },
-          season: { type: "integer" },
-          episode: { type: "integer" },
-          date: { type: "string" },
-          network: { type: "string" },
-          country: { type: "string" },
-          part: { type: "integer" },
-          imdb_id: { type: "string" },
-          tmdb_id: { type: "string" },
+          title: { type: "string", minLength: 1, maxLength: 300 },
+          query: { type: "string", minLength: 1, maxLength: 500 },
+          artist: { type: "string", minLength: 1, maxLength: 200 },
+          album: { type: "string", minLength: 1, maxLength: 200 },
+          track: { type: "string", minLength: 1, maxLength: 200 },
+          year: { type: "integer", minimum: 1800, maximum: 2200 },
+          season: { type: "integer", minimum: 0, maximum: 1e3 },
+          episode: { type: "integer", minimum: 0, maximum: 1e4 },
+          date: { type: "string", maxLength: 40 },
+          network: { type: "string", maxLength: 120 },
+          country: { type: "string", maxLength: 80 },
+          part: { type: "integer", minimum: 0, maximum: 1e4 },
+          imdb_id: { type: "string", pattern: "^tt[0-9]{3,12}$" },
+          tmdb_id: { type: "string", pattern: "^[0-9]{1,12}$" },
           preferredQuality: { type: "string", enum: ["2160p", "1080p", "720p", "480p"] },
-          preferredSubtitleLanguages: { type: "array", items: { type: "string" } },
+          preferredSubtitleLanguages: { type: "array", maxItems: 20, items: { type: "string", minLength: 2, maxLength: 12 } },
           preferredSource: { type: "string", enum: ["torrent", "hls", "auto"] },
-          hlsUrl: { type: "string", format: "uri" }
+          hlsUrl: { type: "string", format: "uri", maxLength: 2048 }
         }
       }
     }
   }, resolverController(resolver));
-  app.get("/v1/torrents/:infoHash", async (request, reply) => {
+  const torrentParams = { type: "object", required: ["infoHash"], additionalProperties: false, properties: { infoHash: { type: "string", pattern: "^(?:[a-fA-F0-9]{40}|[A-Z2-7a-z2-7]{32})$" } } };
+  const streamParams = { type: "object", required: ["infoHash", "fileIndex"], additionalProperties: false, properties: { ...torrentParams.properties, fileIndex: { type: "string", pattern: "^(?:0|[1-9][0-9]{0,5})$" } } };
+  const streamIdParams = { type: "object", required: ["streamId"], additionalProperties: false, properties: { streamId: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" } } };
+  app.get("/v1/torrents/:infoHash", { schema: { params: torrentParams } }, async (request, reply) => {
     const data = engine.getManifest(request.params.infoHash);
     return data ? reply.send({ data }) : reply.code(404).send({ error: "Metadata not found" });
   });
-  app.get("/v1/torrents/:infoHash/files/:fileIndex/stream", streamController(engine));
-  app.get("/v1/subtitles/:infoHash/:fileIndex", subtitleController(engine));
-  app.get("/v1/streams/:streamId/status", statusController(engine));
-  app.get("/v1/streams/:streamId/events", async (request, reply) => {
+  app.get("/v1/torrents/:infoHash/files/:fileIndex/stream", { schema: { params: streamParams } }, streamController(engine));
+  app.get("/v1/subtitles/:infoHash/:fileIndex", { schema: { params: streamParams } }, subtitleController(engine));
+  app.get("/v1/streams/:streamId/status", { schema: { params: streamIdParams } }, statusController(engine));
+  app.get("/v1/streams/:streamId/events", { schema: { params: streamIdParams } }, async (request, reply) => {
     const id = request.params.streamId;
     reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const listener = (event) => {
@@ -1789,7 +1798,33 @@ function createPublicIndexer(timeoutMs = 3e3) {
 async function buildApp() {
   const config = loadConfig();
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL || "info" }
+    logger: { level: process.env.LOG_LEVEL || "info" },
+    bodyLimit: 1048576
+  });
+  const rateBuckets = /* @__PURE__ */ new Map();
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.method === "OPTIONS" || request.url === "/health") return;
+    if (config.apiKey && request.headers["x-api-key"] !== config.apiKey) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const forwarded = request.headers["x-forwarded-for"];
+    const clientKey = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : void 0) || request.ip || "unknown";
+    const now = Date.now();
+    const bucket = rateBuckets.get(clientKey);
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(clientKey, { count: 1, resetAt: now + config.rateLimitWindowMs });
+      return;
+    }
+    bucket.count += 1;
+    reply.header("RateLimit-Limit", config.rateLimitMax);
+    reply.header("RateLimit-Remaining", Math.max(0, config.rateLimitMax - bucket.count));
+    reply.header("RateLimit-Reset", Math.ceil((bucket.resetAt - now) / 1e3));
+    if (bucket.count > config.rateLimitMax) {
+      return reply.code(429).send({ error: "Rate limit exceeded", retryAfterSeconds: Math.ceil((bucket.resetAt - now) / 1e3) });
+    }
+    if (rateBuckets.size > 1e4) {
+      for (const [key, value] of rateBuckets) if (value.resetAt <= now) rateBuckets.delete(key);
+    }
   });
   app.setErrorHandler((error, request, reply) => {
     const isProd = config.nodeEnv === "production";
@@ -1808,7 +1843,7 @@ async function buildApp() {
     reply.code(statusCode).send(response);
   });
   await app.register(cors, {
-    origin: config.allowedOrigins.includes("*") ? true : config.allowedOrigins,
+    origin: config.allowedOrigins.includes("*") ? true : config.allowedOrigins.length ? config.allowedOrigins : false,
     methods: ["GET", "POST", "OPTIONS"],
     credentials: false
   });

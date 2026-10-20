@@ -18,6 +18,35 @@ export async function buildApp() {
   const config = loadConfig();
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL || 'info' },
+    bodyLimit: 1_048_576,
+  });
+
+  const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+  app.addHook('onRequest', async (request, reply) => {
+    if (request.method === 'OPTIONS' || request.url === '/health') return;
+
+    if (config.apiKey && request.headers['x-api-key'] !== config.apiKey) {
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
+
+    const forwarded = request.headers['x-forwarded-for'];
+    const clientKey = (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined) || request.ip || 'unknown';
+    const now = Date.now();
+    const bucket = rateBuckets.get(clientKey);
+    if (!bucket || bucket.resetAt <= now) {
+      rateBuckets.set(clientKey, { count: 1, resetAt: now + config.rateLimitWindowMs });
+      return;
+    }
+    bucket.count += 1;
+    reply.header('RateLimit-Limit', config.rateLimitMax);
+    reply.header('RateLimit-Remaining', Math.max(0, config.rateLimitMax - bucket.count));
+    reply.header('RateLimit-Reset', Math.ceil((bucket.resetAt - now) / 1000));
+    if (bucket.count > config.rateLimitMax) {
+      return reply.code(429).send({ error: 'Rate limit exceeded', retryAfterSeconds: Math.ceil((bucket.resetAt - now) / 1000) });
+    }
+    if (rateBuckets.size > 10_000) {
+      for (const [key, value] of rateBuckets) if (value.resetAt <= now) rateBuckets.delete(key);
+    }
   });
 
   // Custom error handler to prevent leaking sensitive stack traces in production
@@ -39,7 +68,7 @@ export async function buildApp() {
   });
 
   await app.register(cors, {
-    origin: config.allowedOrigins.includes('*') ? true : config.allowedOrigins,
+    origin: config.allowedOrigins.includes('*') ? true : (config.allowedOrigins.length ? config.allowedOrigins : false),
     methods: ['GET', 'POST', 'OPTIONS'],
     credentials: false,
   });

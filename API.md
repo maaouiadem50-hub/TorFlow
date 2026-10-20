@@ -4,7 +4,7 @@ TorFlow is a live WebTorrent-to-HTTP engine. It joins a WebTorrent swarm, resolv
 
 ## Configuration
 
-Copy `.env.example` to `.env`. The resolver is autonomous by default: it queries built-in public adapters without an API key or Jackett deployment. `INDEXER_URL` and `INDEXER_API_KEY` are optional; when both are present, Torznab results are added to the public results. `RESOLVER_TIMEOUT_MS` is capped at 45000 milliseconds; each individual public provider remains capped at 3 seconds. `ALLOWED_ORIGINS` is a comma-separated CORS allowlist.
+Copy `.env.example` to `.env`. Set `TORFLOW_API_KEY` for protected API access; clients send it as the `x-api-key` header. `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW_MS` protect each running instance from request floods. Set `ALLOWED_ORIGINS` to a comma-separated CORS allowlist; if it is empty, browser cross-origin requests are disabled. The resolver is autonomous by default: it queries built-in public adapters without an indexer API key. `INDEXER_URL` and `INDEXER_API_KEY` are optional; when both are present, Torznab results are added to the public results. `RESOLVER_TIMEOUT_MS` is capped at 45000 milliseconds; each individual public provider remains capped at 3 seconds.
 
 ## Automated resolver
 
