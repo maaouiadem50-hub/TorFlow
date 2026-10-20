@@ -635,7 +635,7 @@ function resolverController(resolver) {
       return reply.send({ data: result });
     } catch (error) {
       const message = error.message;
-      const status = /required|invalid|must be|malformed/i.test(message) ? 400 : /timeout|timed out|no active peers|swarm/i.test(message) ? 504 : 404;
+      const status = /required|invalid query|malformed/i.test(message) ? 400 : /timeout|timed out|no active peers|swarm/i.test(message) ? 504 : 404;
       const code = status === 400 ? "INVALID_QUERY" : status === 504 ? "SWARM_TIMEOUT" : "NO_HEALTHY_TORRENT";
       return reply.code(status).send({ error: message, code });
     }
