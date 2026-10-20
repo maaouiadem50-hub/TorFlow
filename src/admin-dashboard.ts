@@ -1,4 +1,4 @@
-export function adminDashboardHtml(): string {
+export function adminDashboardHtml(nonce: string): string {
   return `<!doctype html>
 <html lang="en" dir="ltr">
 <head>
@@ -18,7 +18,7 @@ export function adminDashboardHtml(): string {
 <section class="section"><div class="section-head"><h2>Countries — observed requests</h2><span class="muted" id="countryScope">No data</span></div><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Country code</th><th>Requests</th><th>Share</th></tr></thead><tbody id="countries"><tr><td colspan="4" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><h2>Runtime requests</h2><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody id="runtime"><tr><td colspan="2" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <div class="footer">Data refreshes every 5 seconds. Secrets are never rendered by the dashboard.</div>
-</main><script>
+</main><script nonce="${nonce}">
 const keyInput=document.getElementById('key'); const statusEl=document.getElementById('status'); let key=sessionStorage.getItem('torflow_admin_key')||''; keyInput.value=key;
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const fmtBytes=n=>{n=Number(n||0);if(n<1024)return n+' B';let u=['KB','MB','GB','TB'],i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(1)+' '+u[i]};

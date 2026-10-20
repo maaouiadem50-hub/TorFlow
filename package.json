@@ -3,6 +3,13 @@
   "version": "1.1.0",
   "private": true,
   "description": "Cloud-ready WebTorrent to HTTP Range streaming engine.",
+  "overrides": {
+    "@fastify/ajv-compiler": {
+      "ajv": {
+        "fast-uri": "3.1.9"
+      }
+    }
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -21,7 +28,9 @@
     "@fastify/sensible": "^6.0.0",
     "bencode": "^4.0.0",
     "dotenv": "^16.4.7",
-    "fastify": "^5.2.0",
+    "fast-uri": "4.2.3",
+    "fastify": "5.12.7",
+    "ip-address": "10.7.4",
     "parse-torrent": "9.1.5",
     "pino": "^9.6.0",
     "webtorrent": "2.6.10"

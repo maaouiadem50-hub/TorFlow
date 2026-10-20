@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
+import crypto from 'node:crypto';
 
 interface Entry { file: string; bytes: number; touchedAt: number; }
 
@@ -7,7 +7,7 @@ export class CacheManager {
   private entries = new Map<string, Entry>();
   constructor(private readonly dir: string, private readonly maxBytes: number, private readonly ttlMs: number) {}
   async init(): Promise<void> { await fs.mkdir(this.dir, { recursive: true }); }
-  pathFor(key: string): string { return path.join(this.dir, `${key}.buffer`); }
+  pathFor(key: string): string { return `${this.dir}/${crypto.createHash('sha256').update(key).digest('hex')}.buffer`; }
   async touch(key: string, bytes: number): Promise<void> {
     this.entries.set(key, { file: this.pathFor(key), bytes, touchedAt: Date.now() });
     await this.cleanup();

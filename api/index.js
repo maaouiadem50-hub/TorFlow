@@ -7,35 +7,41 @@ import sensible from "@fastify/sensible";
 // src/config.ts
 import "dotenv/config";
 import path from "node:path";
+function boundedNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
 function loadConfig(env = process.env) {
   const origins = env.ALLOWED_ORIGINS ?? env.CORS_ORIGIN ?? "";
+  const isVercel = env.VERCEL === "1" || env.VERCEL === "true";
   return {
     host: env.HOST || "0.0.0.0",
-    port: Number(env.PORT || 8080),
-    nodeEnv: env.NODE_ENV || (env.VERCEL ? "production" : "development"),
-    cacheDir: path.resolve(env.CACHE_DIR || (env.VERCEL ? "/tmp/torflow-cache" : ".cache")),
-    cacheMaxBytes: Number(env.CACHE_MAX_BYTES || 2147483648),
-    cacheTtlSeconds: Number(env.CACHE_TTL_SECONDS || 3600),
-    maxConcurrentTorrents: Number(env.MAX_CONCURRENT_TORRENTS || 4),
+    port: boundedNumber(env.PORT, 8080, 1, 65535),
+    nodeEnv: env.NODE_ENV || (isVercel ? "production" : "development"),
+    cacheDir: path.resolve(env.CACHE_DIR || (isVercel ? "/tmp/torflow-cache" : ".cache")),
+    cacheMaxBytes: boundedNumber(env.CACHE_MAX_BYTES, 2147483648, 1048576, 2e10),
+    cacheTtlSeconds: boundedNumber(env.CACHE_TTL_SECONDS, 3600, 60, 86400),
+    maxConcurrentTorrents: boundedNumber(env.MAX_CONCURRENT_TORRENTS, 4, 1, 100),
     allowedOrigins: origins.split(",").map((origin) => origin.trim()).filter(Boolean),
     indexerUrl: env.INDEXER_URL,
     indexerApiKey: env.INDEXER_API_KEY,
-    resolverTimeoutMs: Math.min(Number(env.RESOLVER_TIMEOUT_MS ?? 45e3), 45e3),
+    resolverTimeoutMs: boundedNumber(env.RESOLVER_TIMEOUT_MS, 45e3, 500, 45e3),
     openSubtitlesApiKey: env.OPENSUBTITLES_API_KEY,
     resolutionCacheEnabled: env.RESOLUTION_CACHE_ENABLED !== "false",
-    resolutionCacheTtlSeconds: Math.min(Math.max(Number(env.RESOLUTION_CACHE_TTL_SECONDS ?? 3600), 60), 7200),
-    resolutionCacheMaxEntries: Math.max(Number(env.RESOLUTION_CACHE_MAX_ENTRIES ?? 500), 1),
-    resolverDebug: env.RESOLVER_DEBUG === "true",
+    resolutionCacheTtlSeconds: boundedNumber(env.RESOLUTION_CACHE_TTL_SECONDS, 3600, 60, 7200),
+    resolutionCacheMaxEntries: boundedNumber(env.RESOLUTION_CACHE_MAX_ENTRIES, 500, 1, 5e4),
+    resolverDebug: env.RESOLVER_DEBUG === "true" && env.NODE_ENV !== "production",
     apiKey: env.TORFLOW_API_KEY || void 0,
     adminKey: env.TORFLOW_ADMIN_KEY || env.TORFLOW_API_KEY || void 0,
-    rateLimitWindowMs: Math.max(Number(env.RATE_LIMIT_WINDOW_MS || 6e4), 1e3),
-    rateLimitMax: Math.max(Number(env.RATE_LIMIT_MAX || 60), 1)
+    rateLimitWindowMs: boundedNumber(env.RATE_LIMIT_WINDOW_MS, 6e4, 1e3, 36e5),
+    rateLimitMax: boundedNumber(env.RATE_LIMIT_MAX, 60, 1, 1e5)
   };
 }
 
 // src/engine/cache-manager.ts
 import fs from "node:fs/promises";
-import path2 from "node:path";
+import crypto from "node:crypto";
 var CacheManager = class {
   constructor(dir, maxBytes, ttlMs) {
     this.dir = dir;
@@ -50,7 +56,7 @@ var CacheManager = class {
     await fs.mkdir(this.dir, { recursive: true });
   }
   pathFor(key) {
-    return path2.join(this.dir, `${key}.buffer`);
+    return `${this.dir}/${crypto.createHash("sha256").update(key).digest("hex")}.buffer`;
   }
   async touch(key, bytes) {
     this.entries.set(key, { file: this.pathFor(key), bytes, touchedAt: Date.now() });
@@ -82,8 +88,8 @@ import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 
 // src/utils.ts
-import crypto from "node:crypto";
-import path3 from "node:path";
+import crypto2 from "node:crypto";
+import path2 from "node:path";
 var MIME = {
   ".mp4": "video/mp4",
   ".mkv": "video/x-matroska",
@@ -103,10 +109,10 @@ var MIME = {
   ".ts": "video/mp2t"
 };
 function mimeType(filePath) {
-  return MIME[path3.extname(filePath).toLowerCase()] ?? "application/octet-stream";
+  return MIME[path2.extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 function randomId(prefix) {
-  return `${prefix}_${crypto.randomBytes(9).toString("base64url")}`;
+  return `${prefix}_${crypto2.randomBytes(9).toString("base64url")}`;
 }
 
 // src/engine/piece-prioritizer.ts
@@ -624,6 +630,9 @@ var TorrentEngine = class extends EventEmitter {
   }
 };
 
+// src/routes/index.ts
+import { randomBytes } from "node:crypto";
+
 // src/controllers/metadata-controller.ts
 function metadataController(engine) {
   return async (request, reply) => {
@@ -767,7 +776,7 @@ function subtitleController(engine) {
 }
 
 // src/admin-dashboard.ts
-function adminDashboardHtml() {
+function adminDashboardHtml(nonce) {
   return `<!doctype html>
 <html lang="en" dir="ltr">
 <head>
@@ -787,7 +796,7 @@ function adminDashboardHtml() {
 <section class="section"><div class="section-head"><h2>Countries \u2014 observed requests</h2><span class="muted" id="countryScope">No data</span></div><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Country code</th><th>Requests</th><th>Share</th></tr></thead><tbody id="countries"><tr><td colspan="4" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><h2>Runtime requests</h2><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody id="runtime"><tr><td colspan="2" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <div class="footer">Data refreshes every 5 seconds. Secrets are never rendered by the dashboard.</div>
-</main><script>
+</main><script nonce="${nonce}">
 const keyInput=document.getElementById('key'); const statusEl=document.getElementById('status'); let key=sessionStorage.getItem('torflow_admin_key')||''; keyInput.value=key;
 const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const fmtBytes=n=>{n=Number(n||0);if(n<1024)return n+' B';let u=['KB','MB','GB','TB'],i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(1)+' '+u[i]};
@@ -816,7 +825,10 @@ async function registerRoutes(app, engine, resolver, options) {
   };
   app.get("/health", async (_request, reply) => reply.header("Cache-Control", "no-store").send({ status: "ok", service: "torflow" }));
   app.get("/ready", async (_request, reply) => reply.header("Cache-Control", "no-store").send({ status: "ready", service: "torflow" }));
-  app.get("/admin", async (_request, reply) => reply.type("text/html; charset=utf-8").header("Cache-Control", "no-store").send(adminDashboardHtml()));
+  app.get("/admin", async (_request, reply) => {
+    const nonce = randomBytes(18).toString("base64");
+    return reply.type("text/html; charset=utf-8").header("Cache-Control", "no-store").header("Content-Security-Policy", `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'`).send(adminDashboardHtml(nonce));
+  });
   app.get("/admin/api/overview", async (request, reply) => {
     if (!await adminGuard(request, reply)) return;
     const snapshot = engine.getAdminSnapshot();
@@ -1157,6 +1169,34 @@ function selectMediaFile(files, query) {
   return [...activeVideos].sort((a, b) => b.size - a.size)[0];
 }
 
+// src/utils/http.ts
+async function readTextLimited(response, maxBytes = 2 * 1024 * 1024) {
+  if (!response.body) {
+    const text2 = await response.text();
+    if (Buffer.byteLength(text2) > maxBytes) throw new Error("Upstream response exceeded the configured size limit");
+    return text2;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error("Upstream response exceeded the configured size limit");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // src/resolver/subtitles.ts
 var LANGUAGE_MAP = { ar: "ara", en: "eng", fr: "fra", es: "spa", de: "deu", it: "ita", tr: "tur", pt: "por", ru: "rus", nl: "nld", pl: "pol", ko: "kor", ja: "jpn", ara: "ara", eng: "eng", fra: "fra", spa: "spa", deu: "deu", ita: "ita", tur: "tur", por: "por", rus: "rus", nld: "nld", pol: "pol", kor: "kor", jpn: "jpn" };
 var LANGUAGE_LABELS = { ara: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", eng: "English", fra: "Fran\xE7ais", spa: "Espa\xF1ol", deu: "Deutsch", ita: "Italiano", tur: "T\xFCrk\xE7e", por: "Portugu\xEAs", rus: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", nld: "Nederlands", pol: "Polski", kor: "\uD55C\uAD6D\uC5B4", jpn: "\u65E5\u672C\u8A9E" };
@@ -1182,7 +1222,7 @@ var ConfiguredSubtitleProvider = class {
       if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
       const response = await fetch(url, { headers, signal: AbortSignal.timeout(this.timeoutMs) });
       if (!response.ok) return [];
-      const payload = await response.json();
+      const payload = JSON.parse(await readTextLimited(response));
       return (payload.subtitles ?? []).map((item) => {
         const lang = LANGUAGE_MAP[(item.lang ?? item.language ?? "").toLowerCase()] ?? "";
         return lang && item.url && !existing.has(lang) ? { lang, label: item.label ?? LANGUAGE_LABELS[lang] ?? lang, isDefault: lang === "ara" && !existing.has("ara"), url: item.url, source: "opensubtitles" } : void 0;
@@ -1229,7 +1269,7 @@ var OpenSubtitlesClient = class {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(this.timeoutMs), headers });
       if (!response.ok) return this.fallback.search(query, existing, requestedLanguage);
-      const payload = await response.json();
+      const payload = JSON.parse(await readTextLimited(response));
       const results = [];
       for (const item of payload.data ?? []) {
         const lang = LANGUAGE_MAP[(item.attributes?.language ?? "").toLowerCase()] ?? "";
@@ -1251,7 +1291,7 @@ var OpenSubtitlesClient = class {
     try {
       const response = await fetch(`${this.baseUrl}/download`, { method: "POST", signal: AbortSignal.timeout(this.timeoutMs), headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ file_id: fileId, sub_format: "vtt" }) });
       if (!response.ok) return void 0;
-      return (await response.json()).link;
+      return JSON.parse(await readTextLimited(response)).link;
     } catch {
       return void 0;
     }
@@ -1599,7 +1639,7 @@ var TorznabClient = class {
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const response = await fetch(url, { signal: combined, headers: { accept: "application/xml,text/xml" } });
     if (!response.ok) throw new Error(`Indexer responded with HTTP ${response.status}`);
-    const xml = await response.text();
+    const xml = await readTextLimited(response);
     return [...xml.matchAll(/<item[\s\S]*?<\/item>/gi)].map((match) => {
       const item = match[0];
       const seeders = Number(tag(item, "seeders") ?? attrs(item, "seeders").value ?? 0);
@@ -1665,6 +1705,7 @@ function parseHtmlResults(html, source, fallback) {
     const seeders = Number(context.match(/(?:seed(?:s|ers)?|👤)[^0-9]{0,12}(\d+)/i)?.[1] ?? 0);
     const normalized = normalizeMagnet(raw, title);
     if (normalized) results.push({ magnet: normalized, title, seeders, source });
+    if (results.length >= 500) break;
   }
   return results;
 }
@@ -1683,7 +1724,7 @@ var YtsClient = class {
     if (query.year) url.searchParams.set("year", String(query.year));
     const response = await fetch(url, { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "application/json" } });
     if (!response.ok) throw new Error(`YTS HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = JSON.parse(await readTextLimited(response));
     return (payload.data?.movies ?? []).flatMap((movie) => (movie.torrents ?? []).map((torrent) => {
       const title = `${movie.title ?? query.title ?? query.query ?? ""} ${movie.year ?? query.year ?? ""} ${torrent.quality ?? ""} ${torrent.type ?? ""} x264`;
       return { magnet: torrent.hash ? magnet(torrent.hash, title) : "", title, seeders: Number(torrent.seeds ?? torrent.peers ?? 0), leechers: Number(torrent.peers ?? 0), size: Number(torrent.size_bytes ?? 0), source: "yts" };
@@ -1720,7 +1761,7 @@ var TorrentioClient = class {
         debug("torrentio_request_start", { url: requestUrl, attempt: attempt + 1, type: query.type ?? "movie", imdbId: query.imdb_id, season: query.season, episode: query.episode });
         try {
           response = await fetch(requestUrl, { signal: timeoutSignal(Math.max(this.timeoutMs, 8e3), signal), headers: { accept: "application/json" } });
-          responseBody = await response.text();
+          responseBody = await readTextLimited(response);
           debug("torrentio_response", { url: requestUrl, attempt: attempt + 1, status: response.status, bytes: responseBody.length, preview: responseBody.slice(0, 180) });
           if (response.ok) {
             try {
@@ -1770,7 +1811,7 @@ var HtmlTorrentClient = class {
     const settled = await Promise.allSettled(variants.map(async (text) => {
       const response = await fetch(this.url(query, text), { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "text/html,application/xhtml+xml" } });
       if (!response.ok) throw new Error(`${this.source} HTTP ${response.status}`);
-      return parseHtmlResults(await response.text(), this.source, text);
+      return parseHtmlResults(await readTextLimited(response), this.source, text);
     }));
     return settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
   }
@@ -1846,7 +1887,7 @@ var AudioPublicClient = class {
     const search = async (text) => {
       const response = await fetch(`${this.baseUrl}/q.php?q=${encodeURIComponent(text)}`, { signal: timeoutSignal(this.timeoutMs, signal), headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`Audio indexer HTTP ${response.status}`);
-      const payload = await response.json();
+      const payload = JSON.parse(await readTextLimited(response));
       return payload.map((item) => {
         const title = item.name ?? text;
         return { magnet: item.info_hash ? magnet(item.info_hash, title) : "", title, seeders: Number(item.seeders ?? 0), leechers: Number(item.leechers ?? 0), size: Number(item.size ?? 0), source: "public-audio" };

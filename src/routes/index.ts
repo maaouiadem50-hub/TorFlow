@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify';
+import { randomBytes } from 'node:crypto';
 import { metadataController } from '../controllers/metadata-controller.js';
 import { resolverController } from '../controllers/resolver-controller.js';
 import { statusController, streamController } from '../controllers/stream-controller.js';
@@ -19,7 +20,10 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
   };
   app.get('/health', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ok', service: 'torflow' }));
   app.get('/ready', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ready', service: 'torflow' }));
-  app.get('/admin', async (_request, reply) => reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store').send(adminDashboardHtml()));
+  app.get('/admin', async (_request, reply) => {
+    const nonce = randomBytes(18).toString('base64');
+    return reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store').header('Content-Security-Policy', `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'`).send(adminDashboardHtml(nonce));
+  });
   app.get('/admin/api/overview', async (request, reply) => {
     if (!await adminGuard(request, reply)) return;
     const snapshot = engine.getAdminSnapshot();

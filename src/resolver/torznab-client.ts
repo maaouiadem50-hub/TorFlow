@@ -1,5 +1,6 @@
 import { ResolverQuery, TorrentCandidate } from './types.js';
 import { queryText } from './ranking.js';
+import { readTextLimited } from '../utils/http.js';
 
 export interface IndexerClient { search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]>; }
 
@@ -26,7 +27,7 @@ export class TorznabClient implements IndexerClient {
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const response = await fetch(url, { signal: combined, headers: { accept: 'application/xml,text/xml' } });
     if (!response.ok) throw new Error(`Indexer responded with HTTP ${response.status}`);
-    const xml = await response.text();
+    const xml = await readTextLimited(response);
     return [...xml.matchAll(/<item[\s\S]*?<\/item>/gi)].map((match) => {
       const item = match[0];
       const seeders = Number(tag(item, 'seeders') ?? attrs(item, 'seeders').value ?? 0);
