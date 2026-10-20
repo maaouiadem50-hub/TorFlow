@@ -530,6 +530,22 @@ export class TorrentEngine extends EventEmitter {
     return this.manifests.size;
   }
 
+  getAdminSnapshot(): { torrents: Array<{ infoHash: string; name: string; totalSize: number; progress: number; peers: number; activeStreams: number; files: number }>; streams: StreamStatus[] } {
+    const torrents = [...this.manifests.values()].map((manifest) => {
+      const torrent = this.torrents.get(manifest.infoHash);
+      return {
+        infoHash: manifest.infoHash,
+        name: manifest.name,
+        totalSize: manifest.totalSize,
+        progress: torrent?.progress ?? 0,
+        peers: torrent?.numPeers ?? 0,
+        activeStreams: this.torrentStreams.get(manifest.infoHash)?.size ?? 0,
+        files: manifest.files.length
+      };
+    });
+    return { torrents, streams: [...this.streams.values()].map((stream) => ({ ...stream })) };
+  }
+
   async destroy(): Promise<void> {
     this.isDestroyed = true;
     for (const [, timer] of this.idleTimers) {

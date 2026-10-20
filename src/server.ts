@@ -21,9 +21,20 @@ export async function buildApp() {
     bodyLimit: 1_048_576,
   });
 
+  const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {} as Record<string, number>, lastLatencyMs: 0 };
+  const requestStartedAt = new WeakMap<object, number>();
+  app.addHook('onRequest', async (request) => { requestStartedAt.set(request, Date.now()); });
+  app.addHook('onResponse', async (request, reply) => {
+    metrics.total += 1;
+    metrics.lastLatencyMs = Date.now() - (requestStartedAt.get(request) ?? Date.now());
+    const status = String(reply.statusCode);
+    metrics.byStatus[status] = (metrics.byStatus[status] ?? 0) + 1;
+    if (reply.statusCode >= 500) metrics.errors += 1;
+  });
+
   const rateBuckets = new Map<string, { count: number; resetAt: number }>();
   app.addHook('onRequest', async (request, reply) => {
-    if (request.method === 'OPTIONS' || request.url === '/health' || request.url === '/ready') return;
+    if (request.method === 'OPTIONS' || request.url === '/health' || request.url === '/ready' || request.url === '/admin' || request.url.startsWith('/admin/api/')) return;
 
     if (config.apiKey && request.headers['x-api-key'] !== config.apiKey) {
       return reply.code(401).send({ error: 'Unauthorized' });
@@ -101,7 +112,7 @@ export async function buildApp() {
     new HlsSource()
   );
 
-  await registerRoutes(app, engine, resolver);
+  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, metrics, config });
   app.decorate('streamix', { engine, cache, config });
 
   return app;

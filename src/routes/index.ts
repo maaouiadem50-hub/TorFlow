@@ -5,10 +5,44 @@ import { statusController, streamController } from '../controllers/stream-contro
 import { subtitleController } from '../controllers/subtitle-controller.js';
 import { TorrentEngine } from '../engine/torrent-engine.js';
 import { StreamResolver } from '../resolver/stream-resolver.js';
+import { adminDashboardHtml } from '../admin-dashboard.js';
 
-export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver): Promise<void> {
+type RuntimeMetrics = { startedAt: number; total: number; errors: number; byStatus: Record<string, number>; lastLatencyMs: number };
+type RouteOptions = { apiKey?: string; metrics: RuntimeMetrics; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
+
+export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver, options?: RouteOptions): Promise<void> {
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0 }, config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const adminGuard = async (request: any, reply: any): Promise<boolean> => {
+    if (!runtime.apiKey) { reply.code(503).send({ error: 'Admin authentication is not configured' }); return false; }
+    if (request.headers['x-api-key'] !== runtime.apiKey) { reply.code(401).send({ error: 'Unauthorized' }); return false; }
+    return true;
+  };
   app.get('/health', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ok', service: 'torflow' }));
   app.get('/ready', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ready', service: 'torflow' }));
+  app.get('/admin', async (_request, reply) => reply.type('text/html; charset=utf-8').header('Cache-Control', 'no-store').send(adminDashboardHtml()));
+  app.get('/admin/api/overview', async (request, reply) => {
+    if (!await adminGuard(request, reply)) return;
+    const snapshot = engine.getAdminSnapshot();
+    const memory = process.memoryUsage();
+    const total = runtime.metrics.total;
+    return reply.header('Cache-Control', 'no-store').send({
+      service: { status: 'ok', environment: runtime.config.nodeEnv },
+      runtime: { uptimeSeconds: process.uptime(), version: process.env.npm_package_version ?? 'unknown', node: process.version, memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external } },
+      engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents },
+      requests: { total, errors: runtime.metrics.errors, errorRate: total ? runtime.metrics.errors / total : 0, lastLatencyMs: runtime.metrics.lastLatencyMs, byStatus: runtime.metrics.byStatus },
+      config: { resolverTimeoutMs: runtime.config.resolverTimeoutMs, cacheMaxBytes: runtime.config.cacheMaxBytes, cacheTtlSeconds: runtime.config.cacheTtlSeconds }
+    });
+  });
+  app.get('/admin/api/torrents', async (request, reply) => {
+    if (!await adminGuard(request, reply)) return;
+    return reply.header('Cache-Control', 'no-store').send({ data: engine.getAdminSnapshot().torrents });
+  });
+  app.get('/admin/api/streams', async (request, reply) => {
+    if (!await adminGuard(request, reply)) return;
+    const snapshot = engine.getAdminSnapshot();
+    const data = snapshot.streams.map((stream) => ({ ...stream, fileName: engine.getManifest(stream.infoHash)?.files[stream.fileIndex]?.name ?? `file-${stream.fileIndex}` }));
+    return reply.header('Cache-Control', 'no-store').send({ data });
+  });
   app.post('/v1/metadata/inspect', { schema: { body: { type: 'object', required: ['magnet'], additionalProperties: false, properties: { magnet: { type: 'string', minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
   app.post('/v1/resolver/find-stream', {
     schema: {

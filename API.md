@@ -10,6 +10,10 @@ Copy `.env.example` to `.env`. Set `TORFLOW_API_KEY` for protected API access; c
 
 `GET /health` is a public liveness check. `GET /ready` is a public readiness check for load balancers; both return `Cache-Control: no-store`.
 
+## Operations dashboard
+
+Open `/admin` for the built-in operations dashboard. The page does not expose telemetry until the configured `x-api-key` is entered in the page. Protected endpoints are `GET /admin/api/overview`, `GET /admin/api/torrents`, and `GET /admin/api/streams`; they expose runtime health, memory, request counters, active torrents, active streams, peer counts, progress, and configuration limits without returning secret values.
+
 `POST /v1/resolver/find-stream`
 
 ```json
