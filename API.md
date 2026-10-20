@@ -12,7 +12,7 @@ Copy `.env.example` to `.env`. Set `TORFLOW_API_KEY` for protected API access; c
 
 ## Operations dashboard
 
-Open `/admin` for the built-in operations dashboard. The page does not expose telemetry until the configured `x-api-key` is entered in the page. Protected endpoints are `GET /admin/api/overview`, `GET /admin/api/torrents`, and `GET /admin/api/streams`; they expose runtime health, memory, request counters, active torrents, active streams, peer counts, progress, and configuration limits without returning secret values.
+Open `/admin` for the built-in operations dashboard. The page does not expose telemetry until the configured admin key is entered in the page. Protected endpoints are `GET /admin/api/overview`, `GET /admin/api/torrents`, and `GET /admin/api/streams`; they expose runtime health, memory, request counters, active torrents, active streams, peer counts, progress, configuration limits, and country distribution without returning secret values. Country distribution counts real observed API/stream requests using Vercel's country header; it is labeled as instance-scoped request data, not unique users. A persistent Redis/analytics store is required for exact cross-instance and historical totals.
 
 `POST /v1/resolver/find-stream`
 

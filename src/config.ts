@@ -19,6 +19,7 @@ export interface AppConfig {
   resolutionCacheMaxEntries: number;
   resolverDebug: boolean;
   apiKey?: string;
+  adminKey?: string;
   rateLimitWindowMs: number;
   rateLimitMax: number;
 }
@@ -32,6 +33,7 @@ export function loadConfig(env = process.env): AppConfig {
     indexerUrl: env.INDEXER_URL, indexerApiKey: env.INDEXER_API_KEY, resolverTimeoutMs: Math.min(Number(env.RESOLVER_TIMEOUT_MS ?? 45000), 45000), openSubtitlesApiKey: env.OPENSUBTITLES_API_KEY,
     resolutionCacheEnabled: env.RESOLUTION_CACHE_ENABLED !== 'false', resolutionCacheTtlSeconds: Math.min(Math.max(Number(env.RESOLUTION_CACHE_TTL_SECONDS ?? 3600), 60), 7200), resolutionCacheMaxEntries: Math.max(Number(env.RESOLUTION_CACHE_MAX_ENTRIES ?? 500), 1), resolverDebug: env.RESOLVER_DEBUG === 'true',
     apiKey: env.TORFLOW_API_KEY || undefined,
+    adminKey: env.TORFLOW_ADMIN_KEY || env.TORFLOW_API_KEY || undefined,
     rateLimitWindowMs: Math.max(Number(env.RATE_LIMIT_WINDOW_MS || 60_000), 1_000),
     rateLimitMax: Math.max(Number(env.RATE_LIMIT_MAX || 60), 1),
   };

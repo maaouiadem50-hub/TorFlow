@@ -27,6 +27,7 @@ function loadConfig(env = process.env) {
     resolutionCacheMaxEntries: Math.max(Number(env.RESOLUTION_CACHE_MAX_ENTRIES ?? 500), 1),
     resolverDebug: env.RESOLVER_DEBUG === "true",
     apiKey: env.TORFLOW_API_KEY || void 0,
+    adminKey: env.TORFLOW_ADMIN_KEY || env.TORFLOW_API_KEY || void 0,
     rateLimitWindowMs: Math.max(Number(env.RATE_LIMIT_WINDOW_MS || 6e4), 1e3),
     rateLimitMax: Math.max(Number(env.RATE_LIMIT_MAX || 60), 1)
   };
@@ -783,6 +784,7 @@ function adminDashboardHtml() {
 <section class="grid" id="cards"><div class="card"><div class="label">Service</div><div class="value">\u2014</div></div><div class="card"><div class="label">Uptime</div><div class="value">\u2014</div></div><div class="card"><div class="label">Active torrents</div><div class="value">\u2014</div></div><div class="card"><div class="label">Active streams</div><div class="value">\u2014</div></div><div class="card"><div class="label">Memory RSS</div><div class="value">\u2014</div></div><div class="card"><div class="label">Requests</div><div class="value">\u2014</div></div><div class="card"><div class="label">Error rate</div><div class="value">\u2014</div></div><div class="card"><div class="label">Version</div><div class="value">\u2014</div></div></section>
 <section class="section"><div class="section-head"><h2>Active torrents</h2><button class="secondary" onclick="loadAll()">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Info hash</th><th>Peers</th><th>Progress</th><th>Streams</th><th>Size</th></tr></thead><tbody id="torrents"><tr><td colspan="6" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><h2>Active streams</h2><div class="table-wrap"><table><thead><tr><th>Stream ID</th><th>Info hash</th><th>File</th><th>Phase</th><th>Peers</th><th>Progress</th><th>Updated</th></tr></thead><tbody id="streams"><tr><td colspan="7" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
+<section class="section"><div class="section-head"><h2>Countries \u2014 observed requests</h2><span class="muted" id="countryScope">No data</span></div><div class="table-wrap"><table><thead><tr><th>Rank</th><th>Country code</th><th>Requests</th><th>Share</th></tr></thead><tbody id="countries"><tr><td colspan="4" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <section class="section"><h2>Runtime requests</h2><div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody id="runtime"><tr><td colspan="2" class="empty">Connect to load data.</td></tr></tbody></table></div></section>
 <div class="footer">Data refreshes every 5 seconds. Secrets are never rendered by the dashboard.</div>
 </main><script>
@@ -793,20 +795,20 @@ const fmtUptime=s=>{s=Number(s||0);return Math.floor(s/86400)+'d '+Math.floor(s%
 async function api(path){const r=await fetch(path,{headers:{'x-api-key':key}});if(r.status===401)throw Error('Unauthorized API key');if(!r.ok)throw Error('Request failed: '+r.status);return r.json()}
 function connect(){key=keyInput.value.trim();if(!key){statusEl.textContent='API key is required.';return}sessionStorage.setItem('torflow_admin_key',key);loadAll()}
 function renderCards(o){const vals=[o.service?.status||'online',fmtUptime(o.runtime?.uptimeSeconds),o.engine?.activeTorrents??0,o.engine?.activeStreams??0,fmtBytes(o.runtime?.memory?.rss),o.requests?.total??0,((o.requests?.errorRate||0)*100).toFixed(2)+'%',o.runtime?.version||'unknown'];document.querySelectorAll('#cards .value').forEach((e,i)=>e.textContent=vals[i])}
-async function loadAll(){if(!key){return}try{const [o,t,s]=await Promise.all([api('/admin/api/overview'),api('/admin/api/torrents'),api('/admin/api/streams')]);renderCards(o);document.getElementById('torrents').innerHTML=t.data.length?t.data.map(x=>\`<tr><td>\${esc(x.name)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${x.activeStreams}</td><td>\${fmtBytes(x.totalSize)}</td></tr>\`).join(''):'<tr><td colspan="6" class="empty">No active torrents.</td></tr>';document.getElementById('streams').innerHTML=s.data.length?s.data.map(x=>\`<tr><td class="mono">\${esc(x.streamId)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${esc(x.fileName)}</td><td><span class="pill">\${esc(x.phase)}</span></td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${esc(x.updatedAt)}</td></tr>\`).join(''):'<tr><td colspan="7" class="empty">No active streams.</td></tr>';document.getElementById('runtime').innerHTML=Object.entries(o.requests||{}).map(([k,v])=>\`<tr><td>\${esc(k)}</td><td>\${esc(v)}</td></tr>\`).join('');statusEl.textContent='Connected \xB7 last update '+new Date().toLocaleTimeString();statusEl.style.color='var(--green)'}catch(e){statusEl.textContent=e.message;statusEl.style.color='var(--red)'}}
+async function loadAll(){if(!key){return}try{const [o,t,s]=await Promise.all([api('/admin/api/overview'),api('/admin/api/torrents'),api('/admin/api/streams')]);renderCards(o);document.getElementById('torrents').innerHTML=t.data.length?t.data.map(x=>\`<tr><td>\${esc(x.name)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${x.activeStreams}</td><td>\${fmtBytes(x.totalSize)}</td></tr>\`).join(''):'<tr><td colspan="6" class="empty">No active torrents.</td></tr>';document.getElementById('streams').innerHTML=s.data.length?s.data.map(x=>\`<tr><td class="mono">\${esc(x.streamId)}</td><td class="mono">\${esc(x.infoHash)}</td><td>\${esc(x.fileName)}</td><td><span class="pill">\${esc(x.phase)}</span></td><td>\${x.peers}</td><td>\${(x.progress*100).toFixed(1)}%</td><td>\${esc(x.updatedAt)}</td></tr>\`).join(''):'<tr><td colspan="7" class="empty">No active streams.</td></tr>';document.getElementById('runtime').innerHTML=Object.entries(o.requests||{}).map(([k,v])=>\`<tr><td>\${esc(k)}</td><td>\${esc(v)}</td></tr>\`).join('');document.getElementById('countryScope').textContent=o.countries?.scope||'Observed requests';document.getElementById('countries').innerHTML=o.countries?.data?.length?o.countries.data.map((x,i)=>\`<tr><td>\${i+1}</td><td class="mono">\${esc(x.country)}</td><td>\${x.requests}</td><td>\${x.percentage.toFixed(2)}%</td></tr>\`).join(''):'<tr><td colspan="4" class="empty">No country observations yet.</td></tr>';statusEl.textContent='Connected \xB7 last update '+new Date().toLocaleTimeString();statusEl.style.color='var(--green)'}catch(e){statusEl.textContent=e.message;statusEl.style.color='var(--red)'}}
 loadAll();setInterval(loadAll,5000);
 </script></body></html>`;
 }
 
 // src/routes/index.ts
 async function registerRoutes(app, engine, resolver, options) {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0 }, config: { nodeEnv: "development", maxConcurrentTorrents: 4, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() }, config: { nodeEnv: "development", maxConcurrentTorrents: 4, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request, reply) => {
-    if (!runtime.apiKey) {
+    if (!runtime.adminKey) {
       reply.code(503).send({ error: "Admin authentication is not configured" });
       return false;
     }
-    if (request.headers["x-api-key"] !== runtime.apiKey) {
+    if (request.headers["x-api-key"] !== runtime.adminKey) {
       reply.code(401).send({ error: "Unauthorized" });
       return false;
     }
@@ -820,11 +822,14 @@ async function registerRoutes(app, engine, resolver, options) {
     const snapshot = engine.getAdminSnapshot();
     const memory = process.memoryUsage();
     const total = runtime.metrics.total;
+    const countryTotal = [...runtime.metrics.countries.values()].reduce((sum, count) => sum + count, 0);
+    const countries = [...runtime.metrics.countries.entries()].map(([country, count]) => ({ country, requests: count, percentage: countryTotal ? Number((count / countryTotal * 100).toFixed(2)) : 0 })).sort((a, b) => b.requests - a.requests);
     return reply.header("Cache-Control", "no-store").send({
       service: { status: "ok", environment: runtime.config.nodeEnv },
       runtime: { uptimeSeconds: process.uptime(), version: process.env.npm_package_version ?? "unknown", node: process.version, memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external } },
       engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents },
       requests: { total, errors: runtime.metrics.errors, errorRate: total ? runtime.metrics.errors / total : 0, lastLatencyMs: runtime.metrics.lastLatencyMs, byStatus: runtime.metrics.byStatus },
+      countries: { scope: "observed requests on this running instance", uniqueUsers: false, totalObserved: countryTotal, data: countries },
       config: { resolverTimeoutMs: runtime.config.resolverTimeoutMs, cacheMaxBytes: runtime.config.cacheMaxBytes, cacheTtlSeconds: runtime.config.cacheTtlSeconds }
     });
   });
@@ -1886,10 +1891,15 @@ async function buildApp() {
     logger: { level: process.env.LOG_LEVEL || "info" },
     bodyLimit: 1048576
   });
-  const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0 };
+  const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() };
   const requestStartedAt = /* @__PURE__ */ new WeakMap();
   app.addHook("onRequest", async (request) => {
     requestStartedAt.set(request, Date.now());
+    if (!request.url.startsWith("/admin") && request.url !== "/health" && request.url !== "/ready") {
+      const header = request.headers["x-vercel-ip-country"] ?? request.headers["cf-ipcountry"];
+      const country = typeof header === "string" && /^[A-Za-z]{2}$/.test(header) ? header.toUpperCase() : "UNKNOWN";
+      metrics.countries.set(country, (metrics.countries.get(country) ?? 0) + 1);
+    }
   });
   app.addHook("onResponse", async (request, reply) => {
     metrics.total += 1;
@@ -1963,7 +1973,7 @@ async function buildApp() {
     resolutionCache,
     new HlsSource()
   );
-  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, metrics, config });
+  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, config });
   app.decorate("streamix", { engine, cache, config });
   return app;
 }

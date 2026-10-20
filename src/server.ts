@@ -21,9 +21,16 @@ export async function buildApp() {
     bodyLimit: 1_048_576,
   });
 
-  const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {} as Record<string, number>, lastLatencyMs: 0 };
+  const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {} as Record<string, number>, lastLatencyMs: 0, countries: new Map<string, number>() };
   const requestStartedAt = new WeakMap<object, number>();
-  app.addHook('onRequest', async (request) => { requestStartedAt.set(request, Date.now()); });
+  app.addHook('onRequest', async (request) => {
+    requestStartedAt.set(request, Date.now());
+    if (!request.url.startsWith('/admin') && request.url !== '/health' && request.url !== '/ready') {
+      const header = request.headers['x-vercel-ip-country'] ?? request.headers['cf-ipcountry'];
+      const country = typeof header === 'string' && /^[A-Za-z]{2}$/.test(header) ? header.toUpperCase() : 'UNKNOWN';
+      metrics.countries.set(country, (metrics.countries.get(country) ?? 0) + 1);
+    }
+  });
   app.addHook('onResponse', async (request, reply) => {
     metrics.total += 1;
     metrics.lastLatencyMs = Date.now() - (requestStartedAt.get(request) ?? Date.now());
@@ -112,7 +119,7 @@ export async function buildApp() {
     new HlsSource()
   );
 
-  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, metrics, config });
+  await registerRoutes(app, engine, resolver, { apiKey: config.apiKey, adminKey: config.adminKey, metrics, config });
   app.decorate('streamix', { engine, cache, config });
 
   return app;

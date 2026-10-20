@@ -7,14 +7,14 @@ import { TorrentEngine } from '../engine/torrent-engine.js';
 import { StreamResolver } from '../resolver/stream-resolver.js';
 import { adminDashboardHtml } from '../admin-dashboard.js';
 
-type RuntimeMetrics = { startedAt: number; total: number; errors: number; byStatus: Record<string, number>; lastLatencyMs: number };
-type RouteOptions = { apiKey?: string; metrics: RuntimeMetrics; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
+type RuntimeMetrics = { startedAt: number; total: number; errors: number; byStatus: Record<string, number>; lastLatencyMs: number; countries: Map<string, number> };
+type RouteOptions = { apiKey?: string; adminKey?: string; metrics: RuntimeMetrics; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
 
 export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver, options?: RouteOptions): Promise<void> {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0 }, config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: new Map<string, number>() }, config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request: any, reply: any): Promise<boolean> => {
-    if (!runtime.apiKey) { reply.code(503).send({ error: 'Admin authentication is not configured' }); return false; }
-    if (request.headers['x-api-key'] !== runtime.apiKey) { reply.code(401).send({ error: 'Unauthorized' }); return false; }
+    if (!runtime.adminKey) { reply.code(503).send({ error: 'Admin authentication is not configured' }); return false; }
+    if (request.headers['x-api-key'] !== runtime.adminKey) { reply.code(401).send({ error: 'Unauthorized' }); return false; }
     return true;
   };
   app.get('/health', async (_request, reply) => reply.header('Cache-Control', 'no-store').send({ status: 'ok', service: 'torflow' }));
@@ -25,11 +25,14 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
     const snapshot = engine.getAdminSnapshot();
     const memory = process.memoryUsage();
     const total = runtime.metrics.total;
+    const countryTotal = [...runtime.metrics.countries.values()].reduce((sum, count) => sum + count, 0);
+    const countries = [...runtime.metrics.countries.entries()].map(([country, count]) => ({ country, requests: count, percentage: countryTotal ? Number((count / countryTotal * 100).toFixed(2)) : 0 })).sort((a, b) => b.requests - a.requests);
     return reply.header('Cache-Control', 'no-store').send({
       service: { status: 'ok', environment: runtime.config.nodeEnv },
       runtime: { uptimeSeconds: process.uptime(), version: process.env.npm_package_version ?? 'unknown', node: process.version, memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external } },
       engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents },
       requests: { total, errors: runtime.metrics.errors, errorRate: total ? runtime.metrics.errors / total : 0, lastLatencyMs: runtime.metrics.lastLatencyMs, byStatus: runtime.metrics.byStatus },
+      countries: { scope: 'observed requests on this running instance', uniqueUsers: false, totalObserved: countryTotal, data: countries },
       config: { resolverTimeoutMs: runtime.config.resolverTimeoutMs, cacheMaxBytes: runtime.config.cacheMaxBytes, cacheTtlSeconds: runtime.config.cacheTtlSeconds }
     });
   });
