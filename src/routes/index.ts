@@ -56,7 +56,7 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
     const rawLimit = Number((request.query as { limit?: string }).limit ?? 100);
     return reply.header('Cache-Control', 'no-store').send({ data: runtime.requestTracker.recent(Number.isFinite(rawLimit) ? rawLimit : 100) });
   });
-  app.post('/v1/metadata/inspect', { schema: { body: { type: 'object', required: ['magnet'], additionalProperties: false, properties: { magnet: { type: 'string', minLength: 20, maxLength: 4096 } } } } }, metadataController(engine));
+  app.post('/v1/metadata/inspect', { schema: { body: { type: 'object', additionalProperties: false, anyOf: [{ required: ['magnet'] }, { required: ['torrentBase64'] }], properties: { magnet: { type: 'string', minLength: 20, maxLength: 4096 }, torrentBase64: { type: 'string', minLength: 16, maxLength: 2_800_000 } } } } }, metadataController(engine));
   app.post('/v1/resolver/find-stream', {
     schema: {
       body: {

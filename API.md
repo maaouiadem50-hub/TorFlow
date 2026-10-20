@@ -92,7 +92,7 @@ Public providers are queried in parallel with a maximum 3-second timeout per pro
 
 ## Metadata and streaming
 
-- `POST /v1/metadata/inspect` accepts `{ "magnet": "magnet:?..." }` and joins the swarm directly.
+- `POST /v1/metadata/inspect` accepts `{ "magnet": "magnet:?..." }` and joins the swarm directly. For a legal or owned torrent file, send `{ "torrentBase64": "..." }` to provide the complete `.torrent` metadata without relying on DHT metadata discovery. The Base64 payload is limited to 2 MB and should be generated from a trusted torrent file.
 - `GET /v1/torrents/:infoHash` returns a registered manifest.
 - `GET /v1/torrents/:infoHash/files/:fileIndex/stream` returns the media stream.
 - `GET /v1/streams/:streamId/status` returns progress.
