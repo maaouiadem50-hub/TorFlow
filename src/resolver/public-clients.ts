@@ -13,6 +13,12 @@ const TRACKERS = [
   'udp://exodus.desync.com:6969/announce'
 ];
 const resolverDebug = process.env.RESOLVER_DEBUG === 'true';
+const DEFAULT_HEADERS: Record<string, string> = {
+  'user-agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'accept-language': 'en-US,en;q=0.9'
+};
 
 function debug(event: string, data: Record<string, unknown>): void {
   if (resolverDebug) console.log(JSON.stringify({ scope: 'resolver', event, ...data }));
@@ -62,23 +68,62 @@ export function parseTorrentioSeeders(name?: string, title?: string, description
   return matches.length ? Math.max(...matches) : 0;
 }
 
+/** Enhanced HTML/magnet extractor: magnets, btih hashes, data attributes */
 function parseHtmlResults(html: string, source: string, fallback: string): TorrentCandidate[] {
   const results: TorrentCandidate[] = [];
   const seen = new Set<string>();
+
+  const push = (hash: string, title: string, seeders = 0) => {
+    const h = hash.toLowerCase();
+    if (seen.has(h)) return;
+    const m = magnet(hash, title || fallback);
+    if (!m) return;
+    seen.add(h);
+    results.push({ magnet: m, title: title || fallback, seeders, source });
+  };
+
+  // 1) Full magnet URIs
   const magnetPattern = /magnet:\?[^"'<>\s]+/gi;
   for (const raw of html.match(magnetPattern) ?? []) {
     const match = raw.match(/xt=urn%3Abtih%3A([^&]+)|xt=urn:btih:([^&]+)/i);
     const hash = match?.[1] ?? match?.[2];
-    if (!hash || seen.has(hash.toLowerCase())) continue;
-    seen.add(hash.toLowerCase());
+    if (!hash) continue;
     const title = decodeURIComponent(raw.match(/[?&]dn=([^&]+)/i)?.[1] ?? fallback).replace(/[+]/g, ' ');
-    const context = html.slice(Math.max(0, html.indexOf(raw) - 180), html.indexOf(raw) + raw.length + 180);
+    const context = html.slice(Math.max(0, html.indexOf(raw) - 200), html.indexOf(raw) + raw.length + 200);
     const seeders = Number(context.match(/(?:seed(?:s|ers)?|👤)[^0-9]{0,12}(\d+)/i)?.[1] ?? 0);
-    const normalized = normalizeMagnet(raw, title);
-    if (normalized) results.push({ magnet: normalized, title, seeders, source });
+    push(hash, title, seeders);
     if (results.length >= 500) break;
   }
+
+  // 2) Info-hashes in common patterns (href, data-hash, btih=)
+  if (results.length < 20) {
+    const hashPatterns = [
+      /btih[:/=]([a-f0-9]{40})/gi,
+      /data-(?:hash|infohash)=["']([a-f0-9]{40})["']/gi,
+      /\/torrent\/([a-f0-9]{40})/gi,
+      /info_hash=([a-f0-9]{40})/gi
+    ];
+    for (const pattern of hashPatterns) {
+      for (const m of html.matchAll(pattern)) {
+        const hash = m[1];
+        if (!hash) continue;
+        const start = Math.max(0, (m.index ?? 0) - 120);
+        const context = html.slice(start, start + 300);
+        const titleMatch = context.match(/title=["']([^"']{5,120})["']/) ?? context.match(/>([^<]{8,100})</);
+        const title = (titleMatch?.[1] ?? fallback).replace(/\s+/g, ' ').trim();
+        const seeders = Number(context.match(/(?:seed(?:s|ers)?)[^0-9]{0,12}(\d+)/i)?.[1] ?? 0);
+        push(hash, title, seeders);
+        if (results.length >= 100) break;
+      }
+    }
+  }
+
   return results;
+}
+
+function xmlTag(xml: string, name: string): string | undefined {
+  const match = xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`, 'i'));
+  return match?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim();
 }
 
 export class YtsClient implements IndexerClient {
@@ -174,7 +219,7 @@ export class TorrentioClient implements IndexerClient {
               const parsed = JSON.parse(responseBody) as { streams?: unknown[] };
               if ((parsed.streams ?? []).length > 0) break;
             } catch {
-              /* continue to the next URL variant */
+              /* continue */
             }
             response = undefined;
             continue;
@@ -234,7 +279,7 @@ class HtmlTorrentClient implements IndexerClient {
       variants.map(async (text) => {
         const response = await fetch(this.url(query, text), {
           signal: timeoutSignal(this.timeoutMs, signal),
-          headers: { accept: 'text/html,application/xhtml+xml' }
+          headers: { ...DEFAULT_HEADERS, accept: 'text/html,application/xhtml+xml' }
         });
         if (!response.ok) throw new Error(`${this.source} HTTP ${response.status}`);
         return parseHtmlResults(await readTextLimited(response), this.source, text);
@@ -246,27 +291,121 @@ class HtmlTorrentClient implements IndexerClient {
 
 export class X1337Client extends HtmlTorrentClient {
   constructor(timeoutMs = 3000) {
-    super((_q, text) => `https://1337x.to/search/${encodeURIComponent(text)}/1/`, '1337x', timeoutMs);
+    super((_q, text) => `https://www.1377x.to/search/${encodeURIComponent(text)}/1/`, '1337x', timeoutMs);
   }
 }
 
-export class EztvClient extends HtmlTorrentClient {
-  constructor(timeoutMs = 3000) {
-    super((_q, text) => `https://eztv.re/search/${encodeURIComponent(text)}`, 'eztv', timeoutMs);
+export class EztvClient implements IndexerClient {
+  constructor(private readonly timeoutMs = 4000) {}
+  async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
+    if (query.type === 'music') return [];
+    // Prefer official API when imdb_id is available
+    if (query.imdb_id) {
+      const imdb = query.imdb_id.replace(/^tt/i, '');
+      try {
+        const url = `https://eztv.re/api/get-torrents?limit=50&imdb_id=${encodeURIComponent(imdb)}`;
+        const response = await fetch(url, {
+          signal: timeoutSignal(this.timeoutMs, signal),
+          headers: { accept: 'application/json', ...DEFAULT_HEADERS }
+        });
+        if (response.ok) {
+          const payload = JSON.parse(await readTextLimited(response)) as {
+            torrents?: Array<{
+              hash?: string;
+              title?: string;
+              filename?: string;
+              seeds?: number;
+              peers?: number;
+              size_bytes?: number;
+              magnet_url?: string;
+            }>;
+          };
+          const fromApi = (payload.torrents ?? [])
+            .map((t) => {
+              const title = t.title ?? t.filename ?? queryText(query);
+              const m = t.magnet_url
+                ? normalizeMagnet(t.magnet_url, title)
+                : t.hash
+                  ? magnet(t.hash, title)
+                  : '';
+              return {
+                magnet: m,
+                title,
+                seeders: Number(t.seeds ?? 0),
+                leechers: Number(t.peers ?? 0),
+                size: Number(t.size_bytes ?? 0),
+                source: 'eztv'
+              };
+            })
+            .filter((c) => c.magnet);
+          if (fromApi.length) return fromApi;
+        }
+      } catch {
+        /* fall through to HTML */
+      }
+    }
+    const text = queryText(query);
+    const response = await fetch(`https://eztv.re/search/${encodeURIComponent(text)}`, {
+      signal: timeoutSignal(this.timeoutMs, signal),
+      headers: { ...DEFAULT_HEADERS }
+    });
+    if (!response.ok) throw new Error(`eztv HTTP ${response.status}`);
+    return parseHtmlResults(await readTextLimited(response), 'eztv', text);
   }
 }
 
 export class TorrentGalaxyClient extends HtmlTorrentClient {
   constructor(timeoutMs = 3000) {
-    super((_q, text) => `https://torrentgalaxy.to/torrents.php?search=${encodeURIComponent(text)}`, 'torrentgalaxy', timeoutMs);
+    super((_q, text) => `https://torrentgalaxy.one/torrents.php?search=${encodeURIComponent(text)}`, 'torrentgalaxy', timeoutMs);
   }
 }
 
-// ========== المصادر الجديدة (Adapters صحيحة) ==========
-
-export class NyaaClient extends HtmlTorrentClient {
-  constructor(timeoutMs = 3000) {
-    super((_q, text) => `https://nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(text)}`, 'nyaa', timeoutMs);
+/** NYAA via RSS — magnets/infohashes appear reliably in the feed */
+export class NyaaClient implements IndexerClient {
+  constructor(private readonly timeoutMs = 4000) {}
+  async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
+    if (query.type === 'music') return [];
+    const variants =
+      query.type === 'tv_program' || isTvProgram(query) ? tvProgramQueryVariants(query) : seriesQueryVariants(query);
+    const all: TorrentCandidate[] = [];
+    for (const text of variants) {
+      const url = `https://nyaa.si/?page=rss&q=${encodeURIComponent(text)}&c=0_0&f=0`;
+      try {
+        const response = await fetch(url, {
+          signal: timeoutSignal(this.timeoutMs, signal),
+          headers: { accept: 'application/rss+xml,application/xml,text/xml', ...DEFAULT_HEADERS }
+        });
+        if (!response.ok) continue;
+        const xml = await readTextLimited(response);
+        for (const itemMatch of xml.matchAll(/<item[\s\S]*?<\/item>/gi)) {
+          const item = itemMatch[0];
+          const title = xmlTag(item, 'title') ?? text;
+          const seeders = Number(xmlTag(item, 'nyaa:seeders') ?? xmlTag(item, 'seeders') ?? 0);
+          const size = Number(xmlTag(item, 'nyaa:size') ?? 0);
+          let m =
+            xmlTag(item, 'nyaa:infoHash') ? magnet(xmlTag(item, 'nyaa:infoHash')!, title) : '';
+          if (!m) {
+            const link = xmlTag(item, 'link') ?? '';
+            if (link.startsWith('magnet:?')) m = normalizeMagnet(link, title);
+            else {
+              const hashMatch = item.match(/btih:([a-f0-9]{40})/i) ?? item.match(/([a-f0-9]{40})/);
+              if (hashMatch?.[1] && hashMatch[1].length === 40) m = magnet(hashMatch[1], title);
+            }
+          }
+          // Also try enclosure / description magnets
+          if (!m) {
+            const desc = xmlTag(item, 'description') ?? '';
+            const mm = desc.match(/magnet:\?[^"'<\s]+/i);
+            if (mm) m = normalizeMagnet(mm[0], title);
+          }
+          if (m) all.push({ magnet: m, title, seeders, size: Number.isFinite(size) ? size : 0, source: 'nyaa' });
+        }
+        if (all.some((c) => c.seeders >= 3)) break;
+      } catch {
+        /* try next variant */
+      }
+    }
+    return all;
   }
 }
 
@@ -304,13 +443,64 @@ export class YggTorrentClient extends HtmlTorrentClient {
   }
 }
 
-export class InternetArchiveClient extends HtmlTorrentClient {
-  constructor(timeoutMs = 4000) {
-    super(
-      (_q, text) => `https://archive.org/search?query=${encodeURIComponent(text)}&and[]=format%3A%22Torrent%22`,
-      'internet-archive',
-      timeoutMs
-    );
+/** Internet Archive via official JSON advanced search + torrent files */
+export class InternetArchiveClient implements IndexerClient {
+  constructor(private readonly timeoutMs = 5000) {}
+  async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
+    if (query.type === 'music') return [];
+    const text = queryText(query);
+    const q = `(${text}) AND format:("Torrent")`;
+    const url =
+      `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}` +
+      `&fl[]=identifier&fl[]=title&fl[]=downloads&rows=15&page=1&output=json`;
+    try {
+      const response = await fetch(url, {
+        signal: timeoutSignal(this.timeoutMs, signal),
+        headers: { accept: 'application/json', ...DEFAULT_HEADERS }
+      });
+      if (!response.ok) return [];
+      const payload = JSON.parse(await readTextLimited(response)) as {
+        response?: { docs?: Array<{ identifier?: string; title?: string; downloads?: number }> };
+      };
+      const docs = payload.response?.docs ?? [];
+      const results: TorrentCandidate[] = [];
+      for (const doc of docs.slice(0, 10)) {
+        if (!doc.identifier) continue;
+        // Fetch item metadata for torrent hash when possible
+        try {
+          const metaUrl = `https://archive.org/metadata/${encodeURIComponent(doc.identifier)}`;
+          const metaRes = await fetch(metaUrl, {
+            signal: timeoutSignal(this.timeoutMs, signal),
+            headers: { accept: 'application/json', ...DEFAULT_HEADERS }
+          });
+          if (!metaRes.ok) continue;
+          const meta = JSON.parse(await readTextLimited(metaRes)) as {
+            files?: Array<{ name?: string; btih?: string; format?: string; size?: string }>;
+            metadata?: { title?: string };
+          };
+          const title = doc.title ?? meta.metadata?.title ?? text;
+          for (const file of meta.files ?? []) {
+            if (file.btih) {
+              results.push({
+                magnet: magnet(file.btih, title),
+                title: `${title} (${file.name ?? 'torrent'})`,
+                seeders: Math.min(50, Number(doc.downloads ?? 1) || 1),
+                size: Number(file.size ?? 0),
+                source: 'internet-archive'
+              });
+            } else if (file.format?.toLowerCase().includes('torrent') || file.name?.endsWith('.torrent')) {
+              // No btih in metadata — still note via generic page parse fallback later
+            }
+          }
+        } catch {
+          /* skip item */
+        }
+        if (results.length >= 20) break;
+      }
+      return results.filter((c) => c.magnet);
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -350,6 +540,7 @@ export class FitGirlClient extends HtmlTorrentClient {
   }
 }
 
+/** Academic Torrents — parse search HTML + common hash patterns */
 export class AcademicTorrentsClient extends HtmlTorrentClient {
   constructor(timeoutMs = 4000) {
     super((_q, text) => `https://academictorrents.com/browse.php?search=${encodeURIComponent(text)}`, 'academic-torrents', timeoutMs);
@@ -358,37 +549,25 @@ export class AcademicTorrentsClient extends HtmlTorrentClient {
 
 export class LinuxDistroClient implements IndexerClient {
   private readonly keywords = [
-    'ubuntu',
-    'debian',
-    'fedora',
-    'arch linux',
-    'archlinux',
-    'linux mint',
-    'linuxmint',
-    'rocky linux',
-    'rockylinux',
-    'almalinux',
-    'opensuse',
-    'open suse'
+    'ubuntu', 'debian', 'fedora', 'arch linux', 'archlinux',
+    'linux mint', 'linuxmint', 'rocky linux', 'rockylinux',
+    'almalinux', 'opensuse', 'open suse'
   ];
-  constructor(private readonly timeoutMs = 4000) {}
+  constructor(private readonly timeoutMs = 5000) {}
   async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
     const text = (query.title ?? query.query ?? '').toLowerCase();
     const isDistro = this.keywords.some((k) => text.includes(k)) || /\b(iso|linux)\b/i.test(text);
     if (!isDistro) return [];
     const searchText = `${queryText(query)} iso`;
-    const clients = [
+    // Prefer Internet Archive + Apibay for ISOs (structured)
+    const clients: IndexerClient[] = [
+      new InternetArchiveClient(this.timeoutMs),
       new HtmlTorrentClient(
         (_q, t) => `https://www.limetorrents.lol/search/all/${encodeURIComponent(t)}/`,
         'linux-limetorrents',
         this.timeoutMs
       ),
-      new HtmlTorrentClient((_q, t) => `https://1337x.to/search/${encodeURIComponent(t)}/1/`, 'linux-1337x', this.timeoutMs),
-      new HtmlTorrentClient(
-        (_q, t) => `https://archive.org/search?query=${encodeURIComponent(t)}+format%3ATorrent`,
-        'linux-archive',
-        this.timeoutMs
-      )
+      new NyaaClient(this.timeoutMs)
     ];
     const settled = await Promise.allSettled(
       clients.map((c) => c.search({ ...query, query: searchText, title: searchText }, signal))
@@ -396,8 +575,6 @@ export class LinuxDistroClient implements IndexerClient {
     return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   }
 }
-
-// ========== نهاية المصادر الجديدة ==========
 
 export class ApibayVideoClient implements IndexerClient {
   constructor(private readonly baseUrl = 'https://apibay.org', private readonly timeoutMs = 3000) {}
@@ -530,7 +707,6 @@ export function createPublicIndexer(timeoutMs = 3000): IndexerClient {
     new EztvClient(timeoutMs),
     new TorrentGalaxyClient(timeoutMs),
     new AudioPublicClient(undefined, timeoutMs),
-    // المصادر الجديدة — Adapters كاملة
     new NyaaClient(timeoutMs),
     new LimeTorrentsClient(timeoutMs),
     new TorlockClient(timeoutMs),
