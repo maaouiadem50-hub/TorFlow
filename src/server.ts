@@ -23,7 +23,7 @@ export async function buildApp() {
 
   const rateBuckets = new Map<string, { count: number; resetAt: number }>();
   app.addHook('onRequest', async (request, reply) => {
-    if (request.method === 'OPTIONS' || request.url === '/health') return;
+    if (request.method === 'OPTIONS' || request.url === '/health' || request.url === '/ready') return;
 
     if (config.apiKey && request.headers['x-api-key'] !== config.apiKey) {
       return reply.code(401).send({ error: 'Unauthorized' });
