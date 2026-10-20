@@ -262,8 +262,6 @@ export class TorrentGalaxyClient extends HtmlTorrentClient {
   }
 }
 
-// ========== المصادر الجديدة ==========
-
 export class NyaaClient extends HtmlTorrentClient {
   constructor(timeoutMs = 3000) {
     super((_q, text) => `https://nyaa.si/?f=0&c=0_0&q=${encodeURIComponent(text)}`, 'nyaa', timeoutMs);
@@ -387,8 +385,6 @@ export class LinuxDistroClient implements IndexerClient {
     return settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
   }
 }
-
-// ========== نهاية المصادر الجديدة ==========
 
 export class ApibayVideoClient implements IndexerClient {
   constructor(private readonly baseUrl = 'https://apibay.org', private readonly timeoutMs = 3000) {}
