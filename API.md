@@ -52,6 +52,8 @@ The service queries the built-in public adapters first, optionally queries Torzn
 
 Each resolver response includes a unique `requestId` and `diagnostics` with received/completed timestamps, duration, status, phase, attempted candidate count, selected source, cache hit, subtitle status/languages, and quality status. Recent bounded in-memory diagnostics are available to the protected dashboard through `GET /admin/api/requests`; this is runtime telemetry, not a permanent audit database.
 
+Runtime safety limits are configurable with `MAX_CONCURRENT_TORRENTS`, `MAX_ACTIVE_STREAMS`, and `MAX_TORRENT_SIZE_BYTES`. The public indexer aggregate uses a per-source in-memory circuit breaker after repeated failures; this protects one running instance and is not a replacement for a shared Redis-backed breaker when deploying multiple workers.
+
 Successful response:
 
 ```json

@@ -20,6 +20,16 @@ describe('public resolver adapters', () => {
     expect(results).toHaveLength(1);
   });
 
+  it('opens a circuit after repeated source failures', async () => {
+    const failingSearch = vi.fn(async () => { throw new Error('source timeout'); });
+    const client = new MultiIndexerClient([{ search: failingSearch }]);
+    await client.search({ title: 'Dune' });
+    await client.search({ title: 'Dune' });
+    await client.search({ title: 'Dune' });
+    await client.search({ title: 'Dune' });
+    expect(failingSearch).toHaveBeenCalledTimes(3);
+  });
+
   it('resolves series streams using the canonical episode URL', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ streams: [{ name: 'Torrentio 1080p', title: 'Squid Game S01E01 1080p x264 👤 63', infoHash: '0123456789abcdef0123456789abcdef01234567' }] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);

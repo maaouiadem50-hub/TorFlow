@@ -9,6 +9,8 @@ export interface AppConfig {
   cacheMaxBytes: number;
   cacheTtlSeconds: number;
   maxConcurrentTorrents: number;
+  maxActiveStreams: number;
+  maxTorrentBytes: number;
   allowedOrigins: string[];
   indexerUrl?: string;
   indexerApiKey?: string;
@@ -41,6 +43,8 @@ export function loadConfig(env = process.env): AppConfig {
     cacheMaxBytes: boundedNumber(env.CACHE_MAX_BYTES, 2_147_483_648, 1_048_576, 20_000_000_000),
     cacheTtlSeconds: boundedNumber(env.CACHE_TTL_SECONDS, 3600, 60, 86_400),
     maxConcurrentTorrents: boundedNumber(env.MAX_CONCURRENT_TORRENTS, 4, 1, 100),
+    maxActiveStreams: boundedNumber(env.MAX_ACTIVE_STREAMS, 50, 1, 2_000),
+    maxTorrentBytes: boundedNumber(env.MAX_TORRENT_SIZE_BYTES, 500_000_000_000, 1_048_576, 2_000_000_000_000),
     allowedOrigins: origins.split(',').map((origin) => origin.trim()).filter(Boolean),
     indexerUrl: env.INDEXER_URL,
     indexerApiKey: env.INDEXER_API_KEY,

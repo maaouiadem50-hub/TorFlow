@@ -10,10 +10,10 @@ import { adminDashboardHtml } from '../admin-dashboard.js';
 import { RequestTracker } from '../observability/request-tracker.js';
 
 type RuntimeMetrics = { startedAt: number; total: number; errors: number; byStatus: Record<string, number>; lastLatencyMs: number; countries: Map<string, number> };
-type RouteOptions = { apiKey?: string; adminKey?: string; metrics: RuntimeMetrics; requestTracker: RequestTracker; config: { nodeEnv: string; maxConcurrentTorrents: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
+type RouteOptions = { apiKey?: string; adminKey?: string; metrics: RuntimeMetrics; requestTracker: RequestTracker; config: { nodeEnv: string; maxConcurrentTorrents: number; maxActiveStreams: number; maxTorrentBytes: number; resolverTimeoutMs: number; cacheMaxBytes: number; cacheTtlSeconds: number } };
 
 export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine, resolver?: StreamResolver, options?: RouteOptions): Promise<void> {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: new Map<string, number>() }, requestTracker: new RequestTracker(), config: { nodeEnv: 'development', maxConcurrentTorrents: 4, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: new Map<string, number>() }, requestTracker: new RequestTracker(), config: { nodeEnv: 'development', maxConcurrentTorrents: 4, maxActiveStreams: 50, maxTorrentBytes: 500_000_000_000, resolverTimeoutMs: 15000, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request: any, reply: any): Promise<boolean> => {
     if (!runtime.adminKey) { reply.code(503).send({ error: 'Admin authentication is not configured' }); return false; }
     if (request.headers['x-api-key'] !== runtime.adminKey) { reply.code(401).send({ error: 'Unauthorized' }); return false; }
@@ -35,7 +35,7 @@ export async function registerRoutes(app: FastifyInstance, engine: TorrentEngine
     return reply.header('Cache-Control', 'no-store').send({
       service: { status: 'ok', environment: runtime.config.nodeEnv },
       runtime: { uptimeSeconds: process.uptime(), version: process.env.npm_package_version ?? 'unknown', node: process.version, memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external } },
-      engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents },
+      engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents, maxActiveStreams: runtime.config.maxActiveStreams, maxTorrentBytes: runtime.config.maxTorrentBytes },
       requests: { total, errors: runtime.metrics.errors, errorRate: total ? runtime.metrics.errors / total : 0, lastLatencyMs: runtime.metrics.lastLatencyMs, byStatus: runtime.metrics.byStatus },
       countries: { scope: 'observed requests on this running instance', uniqueUsers: false, totalObserved: countryTotal, data: countries },
       config: { resolverTimeoutMs: runtime.config.resolverTimeoutMs, cacheMaxBytes: runtime.config.cacheMaxBytes, cacheTtlSeconds: runtime.config.cacheTtlSeconds }

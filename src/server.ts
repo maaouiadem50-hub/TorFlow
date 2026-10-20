@@ -25,7 +25,8 @@ export async function buildApp() {
   const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {} as Record<string, number>, lastLatencyMs: 0, countries: new Map<string, number>() };
   const requestTracker = new RequestTracker();
   const requestStartedAt = new WeakMap<object, number>();
-  app.addHook('onRequest', async (request) => {
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('x-request-id', request.id);
     requestStartedAt.set(request, Date.now());
     if (!request.url.startsWith('/admin') && request.url !== '/health' && request.url !== '/ready') {
       const header = request.headers['x-vercel-ip-country'] ?? request.headers['cf-ipcountry'];
@@ -100,6 +101,8 @@ export async function buildApp() {
 
   const engine = new TorrentEngine(undefined, {
     maxConcurrentTorrents: config.maxConcurrentTorrents,
+    maxActiveStreams: config.maxActiveStreams,
+    maxTorrentBytes: config.maxTorrentBytes,
     idleTorrentGracePeriodMs: process.env.NODE_ENV === 'test' ? 1000 : 30_000
   });
 

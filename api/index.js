@@ -23,6 +23,8 @@ function loadConfig(env = process.env) {
     cacheMaxBytes: boundedNumber(env.CACHE_MAX_BYTES, 2147483648, 1048576, 2e10),
     cacheTtlSeconds: boundedNumber(env.CACHE_TTL_SECONDS, 3600, 60, 86400),
     maxConcurrentTorrents: boundedNumber(env.MAX_CONCURRENT_TORRENTS, 4, 1, 100),
+    maxActiveStreams: boundedNumber(env.MAX_ACTIVE_STREAMS, 50, 1, 2e3),
+    maxTorrentBytes: boundedNumber(env.MAX_TORRENT_SIZE_BYTES, 5e11, 1048576, 2e12),
     allowedOrigins: origins.split(",").map((origin) => origin.trim()).filter(Boolean),
     indexerUrl: env.INDEXER_URL,
     indexerApiKey: env.INDEXER_API_KEY,
@@ -177,12 +179,16 @@ var TorrentEngine = class extends EventEmitter {
   // infoHash -> timeout
   activeStreamHandles = /* @__PURE__ */ new Map();
   maxConcurrentTorrents;
+  maxActiveStreams;
+  maxTorrentBytes;
   idleTorrentGracePeriodMs;
   isDestroyed = false;
   constructor(client, options = {}) {
     super();
     this.client = client;
     this.maxConcurrentTorrents = Math.max(1, options.maxConcurrentTorrents ?? 4);
+    this.maxActiveStreams = Math.max(1, options.maxActiveStreams ?? 50);
+    this.maxTorrentBytes = Math.max(1048576, options.maxTorrentBytes ?? 5e11);
     this.idleTorrentGracePeriodMs = options.idleTorrentGracePeriodMs ?? 3e4;
   }
   async getClient() {
@@ -252,6 +258,15 @@ var TorrentEngine = class extends EventEmitter {
           files,
           totalSize: files.reduce((sum, file) => sum + file.size, 0)
         };
+        if (manifest.totalSize > this.maxTorrentBytes) {
+          try {
+            torrent.destroy();
+          } catch {
+          }
+          settled = true;
+          reject(new Error(`Torrent exceeds maximum configured size (${this.maxTorrentBytes} bytes)`));
+          return;
+        }
         this.manifests.set(infoHash, manifest);
         this.torrents.set(infoHash, torrent);
         if (!this.torrentStreams.has(infoHash)) {
@@ -275,6 +290,9 @@ var TorrentEngine = class extends EventEmitter {
   }
   registerParsedManifest(manifest) {
     const hash = manifest.infoHash.toLowerCase();
+    if (manifest.totalSize > this.maxTorrentBytes) {
+      throw new Error(`Torrent exceeds maximum configured size (${this.maxTorrentBytes} bytes)`);
+    }
     if (this.manifests.has(hash)) {
       this.cancelIdleCleanup(hash);
       return;
@@ -385,6 +403,9 @@ var TorrentEngine = class extends EventEmitter {
     });
   }
   async openStream(infoHash, fileIndex) {
+    if (this.streams.size >= this.maxActiveStreams) {
+      throw new Error(`Maximum active streams limit reached (${this.maxActiveStreams})`);
+    }
     const hash = infoHash.toLowerCase();
     const manifest = this.manifests.get(hash);
     if (!manifest) throw new Error("Torrent metadata is not loaded");
@@ -853,7 +874,7 @@ var RequestTracker = class {
 
 // src/routes/index.ts
 async function registerRoutes(app, engine, resolver, options) {
-  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() }, requestTracker: new RequestTracker(), config: { nodeEnv: "development", maxConcurrentTorrents: 4, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
+  const runtime = options ?? { metrics: { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() }, requestTracker: new RequestTracker(), config: { nodeEnv: "development", maxConcurrentTorrents: 4, maxActiveStreams: 50, maxTorrentBytes: 5e11, resolverTimeoutMs: 15e3, cacheMaxBytes: 0, cacheTtlSeconds: 0 } };
   const adminGuard = async (request, reply) => {
     if (!runtime.adminKey) {
       reply.code(503).send({ error: "Admin authentication is not configured" });
@@ -881,7 +902,7 @@ async function registerRoutes(app, engine, resolver, options) {
     return reply.header("Cache-Control", "no-store").send({
       service: { status: "ok", environment: runtime.config.nodeEnv },
       runtime: { uptimeSeconds: process.uptime(), version: process.env.npm_package_version ?? "unknown", node: process.version, memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external } },
-      engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents },
+      engine: { activeTorrents: snapshot.torrents.length, activeStreams: snapshot.streams.length, maxConcurrentTorrents: runtime.config.maxConcurrentTorrents, maxActiveStreams: runtime.config.maxActiveStreams, maxTorrentBytes: runtime.config.maxTorrentBytes },
       requests: { total, errors: runtime.metrics.errors, errorRate: total ? runtime.metrics.errors / total : 0, lastLatencyMs: runtime.metrics.lastLatencyMs, byStatus: runtime.metrics.byStatus },
       countries: { scope: "observed requests on this running instance", uniqueUsers: false, totalObserved: countryTotal, data: countries },
       config: { resolverTimeoutMs: runtime.config.resolverTimeoutMs, cacheMaxBytes: runtime.config.cacheMaxBytes, cacheTtlSeconds: runtime.config.cacheTtlSeconds }
@@ -2140,17 +2161,25 @@ var MultiIndexerClient = class {
     this.clients = clients;
   }
   clients;
+  failures = /* @__PURE__ */ new Map();
+  openUntil = /* @__PURE__ */ new Map();
+  failureThreshold = 3;
+  cooldownMs = 3e4;
   async search(query, signal) {
-    const settled = await Promise.allSettled(this.clients.map((client) => client.search(query, signal)));
+    const now = Date.now();
+    const active = this.clients.map((client, index) => ({ client, index })).filter(({ index }) => (this.openUntil.get(index) ?? 0) <= now);
+    const settled = await Promise.allSettled(active.map(({ client }) => client.search(query, signal)));
     const results = settled.flatMap((result, index) => {
+      const sourceIndex = active[index]?.index ?? index;
       if (result.status === "fulfilled") {
-        debug("indexer_result", {
-          index,
-          count: result.value.length,
-          seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders)
-        });
+        this.failures.delete(sourceIndex);
+        this.openUntil.delete(sourceIndex);
+        debug("indexer_result", { index, count: result.value.length, seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders) });
         return result.value;
       }
+      const failures = (this.failures.get(sourceIndex) ?? 0) + 1;
+      this.failures.set(sourceIndex, failures);
+      if (failures >= this.failureThreshold) this.openUntil.set(sourceIndex, Date.now() + this.cooldownMs);
       debug("indexer_error", { index, error: String(result.reason) });
       return [];
     });
@@ -2196,7 +2225,8 @@ async function buildApp() {
   const metrics = { startedAt: Date.now(), total: 0, errors: 0, byStatus: {}, lastLatencyMs: 0, countries: /* @__PURE__ */ new Map() };
   const requestTracker = new RequestTracker();
   const requestStartedAt = /* @__PURE__ */ new WeakMap();
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
+    reply.header("x-request-id", request.id);
     requestStartedAt.set(request, Date.now());
     if (!request.url.startsWith("/admin") && request.url !== "/health" && request.url !== "/ready") {
       const header = request.headers["x-vercel-ip-country"] ?? request.headers["cf-ipcountry"];
@@ -2263,6 +2293,8 @@ async function buildApp() {
   await cache.init();
   const engine = new TorrentEngine(void 0, {
     maxConcurrentTorrents: config.maxConcurrentTorrents,
+    maxActiveStreams: config.maxActiveStreams,
+    maxTorrentBytes: config.maxTorrentBytes,
     idleTorrentGracePeriodMs: process.env.NODE_ENV === "test" ? 1e3 : 3e4
   });
   const publicIndexer = createPublicIndexer(Math.min(config.resolverTimeoutMs, 5e3));

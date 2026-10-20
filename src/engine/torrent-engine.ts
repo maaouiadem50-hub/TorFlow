@@ -39,6 +39,8 @@ type WebTorrentClient = {
 
 export interface TorrentEngineOptions {
   maxConcurrentTorrents?: number;
+  maxActiveStreams?: number;
+  maxTorrentBytes?: number;
   idleTorrentGracePeriodMs?: number;
 }
 
@@ -56,6 +58,8 @@ export class TorrentEngine extends EventEmitter {
   private activeStreamHandles = new Map<string, { infoHash: string; fileIndex: number; pieces: number[] }>();
 
   public maxConcurrentTorrents: number;
+  public maxActiveStreams: number;
+  public maxTorrentBytes: number;
   public idleTorrentGracePeriodMs: number;
   private isDestroyed = false;
 
@@ -63,6 +67,8 @@ export class TorrentEngine extends EventEmitter {
     super();
     this.client = client;
     this.maxConcurrentTorrents = Math.max(1, options.maxConcurrentTorrents ?? 4);
+    this.maxActiveStreams = Math.max(1, options.maxActiveStreams ?? 50);
+    this.maxTorrentBytes = Math.max(1_048_576, options.maxTorrentBytes ?? 500_000_000_000);
     this.idleTorrentGracePeriodMs = options.idleTorrentGracePeriodMs ?? 30_000;
   }
 
@@ -147,6 +153,13 @@ export class TorrentEngine extends EventEmitter {
           totalSize: files.reduce((sum, file) => sum + file.size, 0)
         };
 
+        if (manifest.totalSize > this.maxTorrentBytes) {
+          try { torrent.destroy(); } catch {}
+          settled = true;
+          reject(new Error(`Torrent exceeds maximum configured size (${this.maxTorrentBytes} bytes)`));
+          return;
+        }
+
         this.manifests.set(infoHash, manifest);
         this.torrents.set(infoHash, torrent);
         if (!this.torrentStreams.has(infoHash)) {
@@ -172,6 +185,9 @@ export class TorrentEngine extends EventEmitter {
 
   registerParsedManifest(manifest: TorrentManifest): void {
     const hash = manifest.infoHash.toLowerCase();
+    if (manifest.totalSize > this.maxTorrentBytes) {
+      throw new Error(`Torrent exceeds maximum configured size (${this.maxTorrentBytes} bytes)`);
+    }
     if (this.manifests.has(hash)) {
       this.cancelIdleCleanup(hash);
       return;
@@ -296,6 +312,9 @@ export class TorrentEngine extends EventEmitter {
   }
 
   async openStream(infoHash: string, fileIndex: number): Promise<StreamHandle> {
+    if (this.streams.size >= this.maxActiveStreams) {
+      throw new Error(`Maximum active streams limit reached (${this.maxActiveStreams})`);
+    }
     const hash = infoHash.toLowerCase();
     const manifest = this.manifests.get(hash);
     if (!manifest) throw new Error('Torrent metadata is not loaded');

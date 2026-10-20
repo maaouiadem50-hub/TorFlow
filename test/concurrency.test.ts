@@ -103,4 +103,22 @@ describe('Concurrency and Reference-Aware Piece Selection', () => {
 
     await engine.destroy();
   });
+
+  it('rejects streams above the configured active-stream limit', async () => {
+    const engine = new TorrentEngine(undefined, { maxActiveStreams: 2, idleTorrentGracePeriodMs: 0 });
+    const hash = '7788990011223344556677889900112233445566';
+    engine.registerParsedManifest({ infoHash: hash, name: 'limited.mp4', pieceLength: 262144, pieceCount: 1, totalSize: 1024, files: [{ index: 0, path: 'limited.mp4', name: 'limited.mp4', size: 1024, mimeType: 'video/mp4', offset: 0, selected: false }] });
+    const first = await engine.openStream(hash, 0);
+    const second = await engine.openStream(hash, 0);
+    await expect(engine.openStream(hash, 0)).rejects.toThrow('Maximum active streams limit reached');
+    await first.destroy();
+    await second.destroy();
+    await engine.destroy();
+  });
+
+  it('rejects parsed manifests above the configured torrent-size limit', () => {
+    const engine = new TorrentEngine(undefined, { maxTorrentBytes: 1_048_576 });
+    expect(() => engine.registerParsedManifest({ infoHash: '8899001122334455667788990011223344556677', name: 'too-large.mp4', pieceLength: 262144, pieceCount: 1, totalSize: 1_048_577, files: [{ index: 0, path: 'too-large.mp4', name: 'too-large.mp4', size: 1_048_577, mimeType: 'video/mp4', offset: 0, selected: false }] })).toThrow('Torrent exceeds maximum configured size');
+    expect(engine.getManifest('8899001122334455667788990011223344556677')).toBeUndefined();
+  });
 });

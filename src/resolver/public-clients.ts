@@ -679,18 +679,26 @@ export class AudioPublicClient implements IndexerClient {
 }
 
 export class MultiIndexerClient implements IndexerClient {
+  private readonly failures = new Map<number, number>();
+  private readonly openUntil = new Map<number, number>();
+  private readonly failureThreshold = 3;
+  private readonly cooldownMs = 30_000;
   constructor(private readonly clients: IndexerClient[]) {}
   async search(query: ResolverQuery, signal?: AbortSignal): Promise<TorrentCandidate[]> {
-    const settled = await Promise.allSettled(this.clients.map((client) => client.search(query, signal)));
+    const now = Date.now();
+    const active = this.clients.map((client, index) => ({ client, index })).filter(({ index }) => (this.openUntil.get(index) ?? 0) <= now);
+    const settled = await Promise.allSettled(active.map(({ client }) => client.search(query, signal)));
     const results = settled.flatMap((result, index) => {
+      const sourceIndex = active[index]?.index ?? index;
       if (result.status === 'fulfilled') {
-        debug('indexer_result', {
-          index,
-          count: result.value.length,
-          seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders)
-        });
+        this.failures.delete(sourceIndex);
+        this.openUntil.delete(sourceIndex);
+        debug('indexer_result', { index, count: result.value.length, seeders: result.value.slice(0, 5).map((candidate) => candidate.seeders) });
         return result.value;
       }
+      const failures = (this.failures.get(sourceIndex) ?? 0) + 1;
+      this.failures.set(sourceIndex, failures);
+      if (failures >= this.failureThreshold) this.openUntil.set(sourceIndex, Date.now() + this.cooldownMs);
       debug('indexer_error', { index, error: String(result.reason) });
       return [];
     });
